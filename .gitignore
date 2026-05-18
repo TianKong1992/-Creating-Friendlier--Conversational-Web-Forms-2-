@@ -1,0 +1,26 @@
+# ── Claude Code internal ──────────────────────────
+.claude/
+.agents/
+skills-lock.json
+
+# ── Python ────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# ── musicKtv user data & cache ────────────────────
+musicKtv/downloads/
+musicKtv/recordings/
+musicKtv/data/
+
+# ── IDE ───────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── OS ────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+.DS_Store

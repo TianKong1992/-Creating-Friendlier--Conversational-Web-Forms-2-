@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>音乐KTV</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- 顶部导航 -->
+  <header class="header">
+    <h1 class="logo">音乐KTV</h1>
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="ktv">K歌</button>
+      <button class="tab-btn" data-tab="recordings">录音列表</button>
+    </nav>
+  </header>
+
+  <!-- K歌页面 -->
+  <main class="tab-panel active" id="tab-ktv">
+    <div class="ktv-layout">
+      <!-- 左侧：搜索 -->
+      <section class="panel search-panel">
+        <h2>搜索歌曲</h2>
+        <div class="search-bar">
+          <input type="text" id="search-input" placeholder="输入歌名..." autocomplete="off">
+          <button id="search-btn">搜索</button>
+        </div>
+        <div class="search-results" id="search-results">
+          <p class="placeholder">输入关键词搜索伴奏</p>
+        </div>
+      </section>
+
+      <!-- 右侧：歌单 + 已唱 -->
+      <div class="right-panels">
+        <section class="panel playlist-panel">
+          <h2>已点歌曲 <span class="count" id="playlist-count">0</span></h2>
+          <div class="playlist" id="playlist">
+            <p class="placeholder">还没有点歌，去搜索添加吧</p>
+          </div>
+          <div class="playlist-actions" id="playlist-actions" style="display:none">
+            <button id="clear-playlist-btn" class="btn-outline">清空歌单</button>
+          </div>
+        </section>
+
+        <section class="panel sung-panel">
+          <h2>已唱歌曲 <span class="count" id="sung-count">0</span></h2>
+          <div class="playlist" id="sung-list">
+            <p class="placeholder">还没有唱过歌</p>
+          </div>
+          <div class="playlist-actions" id="sung-actions" style="display:none">
+            <button id="clear-sung-btn" class="btn-outline">清空已唱</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 舞台 -->
+    <section class="stage" id="stage">
+      <div class="stage-inner">
+        <div class="stage-art" id="stage-art">
+          <div class="disc"></div>
+        </div>
+        <div class="stage-info">
+          <div class="song-title" id="now-playing">选择歌曲开始K歌</div>
+          <div class="song-artist" id="now-artist"></div>
+          <div class="stage-actions">
+            <button class="btn-kge" id="btn-start-kge" disabled>开始K歌</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 录音列表页面 -->
+  <main class="tab-panel" id="tab-recordings">
+    <section class="panel recordings-panel">
+      <h2>我的录音 <span class="count" id="recordings-count">0</span></h2>
+      <div class="recordings-list" id="recordings-list">
+        <p class="placeholder">加载中...</p>
+      </div>
+      <div class="playlist-actions" id="recordings-actions" style="display:none">
+        <button id="clear-recordings-btn" class="btn-outline">清空全部录音</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+</div>
+
+<!-- ── K歌全屏模式 ────────────────────────────────────── -->
+<div class="kge-overlay" id="kge-overlay" style="display:none">
+  <button class="kge-back-btn" id="kge-back-btn" title="返回">✕</button>
+  <div class="kge-container">
+    <div class="kge-header">
+      <div class="kge-song-title" id="kge-song-title"></div>
+      <div class="kge-song-artist" id="kge-song-artist"></div>
+    </div>
+
+    <!-- 歌词区 -->
+    <div class="kge-lyrics" id="kge-lyrics">
+      <div class="lyrics-inner" id="lyrics-inner"></div>
+    </div>
+
+    <!-- 进度 -->
+    <div class="kge-progress" id="kge-progress-wrap">
+      <div class="kge-progress-time">
+        <span id="kge-time-current">00:00</span>
+        <span id="kge-time-total">00:00</span>
+      </div>
+      <div class="kge-progress-track">
+        <div class="kge-progress-fill" id="kge-progress-fill"></div>
+      </div>
+    </div>
+
+    <!-- 状态 -->
+    <div class="kge-status">
+      <span class="kge-rec-dot" id="kge-rec-dot" style="display:none"></span>
+      <span id="kge-status-text"></span>
+      <span id="kge-rec-timer" style="display:none"></span>
+    </div>
+
+    <!-- 波形 -->
+    <canvas id="kge-waveform" class="kge-waveform"></canvas>
+
+    <!-- 按钮 -->
+    <div class="kge-actions" id="kge-actions">
+      <button class="kge-stop-btn" id="kge-stop-btn" style="display:none">停止录制</button>
+    </div>
+
+    <!-- 倒计时 -->
+    <div class="kge-countdown" id="kge-countdown" style="display:none"></div>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

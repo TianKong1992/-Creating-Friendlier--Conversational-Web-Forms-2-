@@ -1,0 +1,579 @@
+"""
+YouTube 视频下载器 — 基于 yt-dlp 的 YouTube 提取器
+YouTube 使用 DASH 分离流，音视频分开存储，需要 ffmpeg 合并
+支持通过 Firefox 浏览器 Cookie 登录以解锁年龄限制内容（Chrome/Edge 因 App-Bound Encryption 无法使用）
+"""
+import os
+import threading
+import subprocess
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+import yt_dlp
+
+
+class YoutubeDownloader:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("YouTube 视频下载器")
+        self.root.geometry("860x660")
+        self.root.resizable(True, True)
+        self.root.minsize(720, 540)
+
+        self.formats = []
+        self.audio_formats = []
+        self.video_title = ""
+        self.output_dir = os.path.expanduser("~\\Downloads")
+        self._has_ffmpeg = self._check_ffmpeg()
+
+        self.video_checked_iid = None
+        self.audio_checked_iid = None
+
+        self._use_cookies = False
+        self._cookies_browser = "firefox"
+
+        self._build_ui()
+
+    # ── ffmpeg 检测 ───────────────────────────────────────────────
+
+    @staticmethod
+    def _check_ffmpeg():
+        try:
+            subprocess.run(["ffmpeg", "-version"], capture_output=True)
+            return True
+        except FileNotFoundError:
+            return False
+
+    # ── 登录配置 ──────────────────────────────────────────────────
+
+    def _build_login_opts(self):
+        if self._use_cookies:
+            return {"cookiesfrombrowser": (self._cookies_browser,)}
+        return {}
+
+    # ── UI ────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        # URL 输入
+        url_frame = ttk.Frame(self.root, padding="8")
+        url_frame.pack(fill=tk.X)
+        ttk.Label(url_frame, text="视频链接:").pack(side=tk.LEFT)
+        self.url_entry = ttk.Entry(url_frame)
+        self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+        self.query_btn = ttk.Button(url_frame, text="查询", command=self._query)
+        self.query_btn.pack(side=tk.LEFT)
+        self.root.bind("<Return>", lambda _: self._query())
+
+        # 登录区域
+        login_frame = ttk.LabelFrame(self.root, text="Google 账户登录", padding="6")
+        login_frame.pack(fill=tk.X, padx=8, pady=(4, 0))
+
+        row1 = ttk.Frame(login_frame)
+        row1.pack(fill=tk.X, pady=(0, 4))
+
+        ttk.Label(row1, text="浏览器:").pack(side=tk.LEFT)
+        self.browser_var = tk.StringVar(value="Firefox")
+        self.browser_combo = ttk.Combobox(
+            row1, textvariable=self.browser_var,
+            values=["Firefox (推荐)", "Chrome", "Edge", "Brave", "Opera"],
+            state="readonly", width=14)
+        self.browser_combo.pack(side=tk.LEFT, padx=(4, 8))
+
+        self.login_btn = ttk.Button(row1, text="获取登录状态", command=self._browser_login)
+        self.login_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.login_status_var = tk.StringVar(value="未登录 — 推荐使用 Firefox 登录 YouTube，Chrome/Edge 无法解密 Cookie")
+        ttk.Label(login_frame, textvariable=self.login_status_var,
+                  foreground="gray").pack(anchor=tk.W, pady=(4, 0))
+
+        ttk.Label(login_frame, text="步骤: ① 用 Firefox 登录 youtube.com → ② 点击「获取登录状态」",
+                  foreground="#0066cc").pack(anchor=tk.W, pady=(2, 0))
+
+        # 视频格式列表
+        vf = ttk.LabelFrame(self.root, text="视频格式 (勾选一个)", padding="4")
+        vf.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
+
+        v_cols = ("vselect", "id", "quality", "resolution", "codec", "vbr", "filesize")
+        self.video_tree = ttk.Treeview(vf, columns=v_cols, show="headings",
+                                       height=6, selectmode="none")
+        self.video_tree.heading("vselect", text="☐")
+        self.video_tree.heading("id", text="格式ID")
+        self.video_tree.heading("quality", text="画质")
+        self.video_tree.heading("resolution", text="分辨率")
+        self.video_tree.heading("codec", text="编码")
+        self.video_tree.heading("vbr", text="码率")
+        self.video_tree.heading("filesize", text="文件大小")
+        self.video_tree.column("vselect", width=36, anchor=tk.CENTER)
+        self.video_tree.column("id", width=70, anchor=tk.CENTER)
+        self.video_tree.column("quality", width=100, anchor=tk.CENTER)
+        self.video_tree.column("resolution", width=110, anchor=tk.CENTER)
+        self.video_tree.column("codec", width=130, anchor=tk.CENTER)
+        self.video_tree.column("vbr", width=85, anchor=tk.CENTER)
+        self.video_tree.column("filesize", width=100, anchor=tk.CENTER)
+
+        vs = ttk.Scrollbar(vf, orient=tk.VERTICAL, command=self.video_tree.yview)
+        self.video_tree.configure(yscrollcommand=vs.set)
+        self.video_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vs.pack(side=tk.RIGHT, fill=tk.Y)
+        self.video_tree.bind("<ButtonRelease-1>", self._on_video_click)
+
+        # 音频格式列表
+        af = ttk.LabelFrame(self.root, text="音频格式 (视频无内嵌音频时需勾选)", padding="4")
+        af.pack(fill=tk.BOTH, expand=True, padx=8, pady=(6, 0))
+
+        a_cols = ("aselect", "aid", "quality", "codec", "abr", "filesize")
+        self.audio_tree = ttk.Treeview(af, columns=a_cols, show="headings",
+                                       height=3, selectmode="none")
+        self.audio_tree.heading("aselect", text="☐")
+        self.audio_tree.heading("aid", text="格式ID")
+        self.audio_tree.heading("quality", text="音质")
+        self.audio_tree.heading("codec", text="编码")
+        self.audio_tree.heading("abr", text="码率")
+        self.audio_tree.heading("filesize", text="文件大小")
+        self.audio_tree.column("aselect", width=36, anchor=tk.CENTER)
+        self.audio_tree.column("aid", width=70, anchor=tk.CENTER)
+        self.audio_tree.column("quality", width=100, anchor=tk.CENTER)
+        self.audio_tree.column("codec", width=130, anchor=tk.CENTER)
+        self.audio_tree.column("abr", width=85, anchor=tk.CENTER)
+        self.audio_tree.column("filesize", width=100, anchor=tk.CENTER)
+
+        as_ = ttk.Scrollbar(af, orient=tk.VERTICAL, command=self.audio_tree.yview)
+        self.audio_tree.configure(yscrollcommand=as_.set)
+        self.audio_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        as_.pack(side=tk.RIGHT, fill=tk.Y)
+        self.audio_tree.bind("<ButtonRelease-1>", self._on_audio_click)
+
+        # 保存目录
+        dir_frame = ttk.Frame(self.root, padding="8 4 8 4")
+        dir_frame.pack(fill=tk.X)
+        ttk.Label(dir_frame, text="保存目录:").pack(side=tk.LEFT)
+        self.dir_var = tk.StringVar(value=self.output_dir)
+        ttk.Label(dir_frame, textvariable=self.dir_var, foreground="gray").pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+        ttk.Button(dir_frame, text="浏览", command=self._browse_dir).pack(side=tk.LEFT)
+
+        # 进度
+        prog_frame = ttk.Frame(self.root, padding="8 4 8 4")
+        prog_frame.pack(fill=tk.X)
+        self.progress = ttk.Progressbar(prog_frame, mode="determinate")
+        self.progress.pack(fill=tk.X)
+
+        # 下载按钮
+        btn_frame = ttk.Frame(self.root, padding="8 4 8 8")
+        btn_frame.pack(fill=tk.X)
+        self.dl_btn = ttk.Button(btn_frame, text="下载选中画质", command=self._download)
+        self.dl_btn.pack(side=tk.LEFT)
+
+        # 状态栏
+        self.status_var = tk.StringVar(value="就绪 — 粘贴YouTube链接，点击查询")
+        ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN,
+                  anchor=tk.W, padding="4 2 4 2").pack(fill=tk.X, side=tk.BOTTOM)
+
+    # ── 登录 ──────────────────────────────────────────────────────
+
+    def _browser_login(self):
+        browser = self.browser_var.get().replace(" (推荐)", "").lower()
+        self.login_btn.config(state=tk.DISABLED)
+        self.login_status_var.set("正在检测浏览器中的 YouTube 登录状态...")
+        threading.Thread(target=self._do_browser_login, args=(browser,), daemon=True).start()
+
+    def _do_browser_login(self, browser):
+        opts = {
+            "cookiesfrombrowser": (browser,),
+            "quiet": True,
+            "no_warnings": True,
+            "playlistend": 0,
+            "js_runtimes": {"node": {}},
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.extract_info("https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                                 download=False)
+            self._cookies_browser = browser
+            self._use_cookies = True
+            self.root.after(0, self._on_login_success, browser)
+        except Exception as e:
+            err = str(e).lower()
+            if "permission" in err or any(kw in err for kw in
+                   ("sharing violation", "being used", "lock",
+                    "另一个程序正在使用", "进程无法访问")):
+                self.root.after(0, self._on_login_error,
+                              f"读取 {browser.title()} Cookie 失败，请确认浏览器已安装且已登录 YouTube。\n"
+                              f"Chrome/Edge 因 App-Bound Encryption 不支持，请改用 Firefox。")
+            elif "could not find" in err or "no such file" in err:
+                self.root.after(0, self._on_login_error,
+                              f"未找到 {browser.title()} 浏览器数据，请确认已安装该浏览器")
+            elif "decrypt" in err or "dpapi" in err or "keyring" in err:
+                self.root.after(0, self._on_login_error,
+                              f"{browser.title()} Cookie 解密失败（App-Bound Encryption）。\n"
+                              f"Chrome/Edge 新版不再支持外部工具读取 Cookie。\n"
+                              f"请改用 Firefox 浏览器登录 YouTube 后重试。")
+            elif "incomplete login" in err or "you must be logged in" in err:
+                self.root.after(0, self._on_login_error,
+                              f"未检测到 {browser.title()} 中的 YouTube 登录信息。\n"
+                              f"请先在 {browser.title()} 中登录 YouTube 后重试")
+            elif "cookies" in err and "not find" in err:
+                self.root.after(0, self._on_login_error,
+                              f"未检测到 {browser.title()} 中的 YouTube 登录信息")
+            else:
+                self.root.after(0, self._on_login_error,
+                              f"检测失败: {str(e)[:250]}")
+
+    def _on_login_success(self, browser):
+        self.login_btn.config(state=tk.NORMAL)
+        self.login_status_var.set(f"已登录 ✓ ({browser}) — 可访问年龄限制内容")
+        messagebox.showinfo(
+            "登录成功",
+            f"已检测到 {browser.title()} 中的 YouTube 登录状态！"
+        )
+
+    def _on_login_error(self, msg):
+        self.login_btn.config(state=tk.NORMAL)
+        self._use_cookies = False
+        self.login_status_var.set("未登录")
+        messagebox.showerror("登录失败", msg)
+
+    # ── 格式选择 ──────────────────────────────────────────────────
+
+    def _on_video_click(self, event):
+        col = self.video_tree.identify_column(event.x)
+        if col != "#1":
+            return
+        iid = self.video_tree.identify_row(event.y)
+        if not iid:
+            return
+        if self.video_checked_iid == iid:
+            self.video_tree.set(iid, "vselect", "☐")
+            self.video_checked_iid = None
+        else:
+            if self.video_checked_iid:
+                self.video_tree.set(self.video_checked_iid, "vselect", "☐")
+            self.video_tree.set(iid, "vselect", "☑")
+            self.video_checked_iid = iid
+
+    def _on_audio_click(self, event):
+        col = self.audio_tree.identify_column(event.x)
+        if col != "#1":
+            return
+        iid = self.audio_tree.identify_row(event.y)
+        if not iid:
+            return
+        if self.audio_checked_iid == iid:
+            self.audio_tree.set(iid, "aselect", "☐")
+            self.audio_checked_iid = None
+        else:
+            if self.audio_checked_iid:
+                self.audio_tree.set(self.audio_checked_iid, "aselect", "☐")
+            self.audio_tree.set(iid, "aselect", "☑")
+            self.audio_checked_iid = iid
+
+    def _browse_dir(self):
+        chosen = filedialog.askdirectory(initialdir=self.output_dir, title="选择保存目录")
+        if chosen:
+            self.output_dir = chosen
+            self.dir_var.set(chosen)
+
+    # ── 查询 ──────────────────────────────────────────────────────
+
+    def _query(self):
+        url = self.url_entry.get().strip()
+        if not url:
+            messagebox.showwarning("提示", "请先输入视频链接")
+            return
+        self.query_btn.config(state=tk.DISABLED)
+        self.status_var.set("正在获取视频信息...")
+        threading.Thread(target=self._do_query, args=(url,), daemon=True).start()
+
+    @staticmethod
+    def _format_bytes(size_bytes):
+        if size_bytes <= 0:
+            return "未知"
+        if size_bytes >= 1024**3:
+            return f"{size_bytes / (1024**3):.1f} GB"
+        if size_bytes >= 1024**2:
+            return f"{size_bytes / (1024**2):.1f} MB"
+        return f"{size_bytes / 1024:.1f} KB"
+
+    @staticmethod
+    def _format_bitrate(kbps):
+        if kbps <= 0:
+            return "未知"
+        if kbps >= 1000:
+            return f"{kbps / 1000:.1f} Mbps"
+        return f"{kbps:.0f} Kbps"
+
+    @staticmethod
+    def _deduplicate_formats(formats, key_fn):
+        """按 key_fn 去重，保留文件最大的一项"""
+        seen = {}
+        for f in formats:
+            k = key_fn(f)
+            if k not in seen or f["_bytes"] > seen[k]["_bytes"]:
+                seen[k] = f
+        return list(seen.values())
+
+    def _build_ydl_opts(self):
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "js_runtimes": {"node": {}},
+        }
+        opts.update(self._build_login_opts())
+        return opts
+
+    def _do_query(self, url):
+        try:
+            with yt_dlp.YoutubeDL(self._build_ydl_opts()) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            self.root.after(0, self._on_query_error, f"获取信息失败: {e}")
+            return
+
+        self.video_title = info.get("title", "未知")
+        duration = info.get("duration") or 0
+        raw_formats = info.get("formats", [])
+
+        video_formats = []
+        audio_formats = []
+
+        for f in raw_formats:
+            vcodec = f.get("vcodec") or "none"
+            acodec = f.get("acodec") or "none"
+
+            if vcodec == "none" and acodec != "none":
+                abr = f.get("abr") or f.get("tbr") or 0
+                filesize = f.get("filesize") or f.get("filesize_approx") or 0
+                if not filesize and abr and duration:
+                    filesize = int(abr * 1000 / 8 * duration)
+
+                if abr >= 160:
+                    quality = "高音质"
+                elif abr >= 80:
+                    quality = "标准音质"
+                else:
+                    quality = f.get("format_note") or "低音质"
+
+                audio_formats.append({
+                    "id": f.get("format_id", ""),
+                    "quality": quality,
+                    "codec": acodec.split(".")[0] if acodec else "未知",
+                    "abr": self._format_bitrate(abr),
+                    "filesize": self._format_bytes(filesize),
+                    "_abr": abr,
+                    "_bytes": filesize,
+                })
+                continue
+
+            if vcodec == "none":
+                continue
+
+            height = f.get("height") or 0
+            width = f.get("width") or 0
+            if width and height:
+                resolution = f"{width}x{height}"
+            elif height:
+                resolution = f"{height}p"
+            else:
+                resolution = "未知"
+
+            vbr = f.get("vbr") or f.get("tbr") or 0
+            filesize = f.get("filesize") or f.get("filesize_approx") or 0
+            if not filesize and vbr and duration:
+                filesize = int(vbr * 1000 / 8 * duration)
+
+            quality_label = f.get("format_note") or f.get("format", "")
+
+            video_formats.append({
+                "id": f.get("format_id", ""),
+                "quality": quality_label,
+                "resolution": resolution,
+                "codec": vcodec.split(".")[0] if vcodec else "未知",
+                "vbr": self._format_bitrate(vbr),
+                "filesize": self._format_bytes(filesize),
+                "_height": height,
+                "_vbr": vbr,
+                "_bytes": filesize,
+                "_has_audio": acodec != "none",
+            })
+
+        video_formats = self._deduplicate_formats(
+            video_formats, key_fn=lambda f: (f["_height"], f["codec"]))
+        audio_formats = self._deduplicate_formats(
+            audio_formats, key_fn=lambda f: (f["_abr"], f["codec"]))
+
+        video_formats.sort(key=lambda x: (x["_height"], x["_vbr"]), reverse=True)
+        audio_formats.sort(key=lambda x: x["_abr"], reverse=True)
+
+        self.root.after(0, self._on_query_success, video_formats, audio_formats)
+
+    def _on_query_error(self, msg):
+        self.query_btn.config(state=tk.NORMAL)
+        self.status_var.set("查询失败")
+        messagebox.showerror("错误", msg)
+
+    def _on_query_success(self, video_formats, audio_formats):
+        self.query_btn.config(state=tk.NORMAL)
+        self.formats = video_formats
+        self.audio_formats = audio_formats
+        self.video_checked_iid = None
+        self.audio_checked_iid = None
+
+        self.video_tree.delete(*self.video_tree.get_children())
+        self.audio_tree.delete(*self.audio_tree.get_children())
+
+        for f in video_formats:
+            self.video_tree.insert("", tk.END, values=(
+                "☐", f["id"], f["quality"], f["resolution"],
+                f["codec"], f["vbr"], f["filesize"]))
+
+        for f in audio_formats:
+            self.audio_tree.insert("", tk.END, values=(
+                "☐", f["id"], f["quality"], f["codec"],
+                f["abr"], f["filesize"]))
+
+        if video_formats:
+            best = video_formats[0]
+            self.status_var.set(
+                f"查询完成 — {self.video_title} — "
+                f"视频: {len(video_formats)} 个, 音频: {len(audio_formats)} 个, "
+                f"最佳: {best['quality']} {best['resolution']}")
+        else:
+            self.status_var.set(f"查询完成 — {self.video_title} — 未找到可用格式")
+
+    # ── 下载 ──────────────────────────────────────────────────────
+
+    def _get_checked_video(self):
+        if self.video_checked_iid is None:
+            return None
+        try:
+            idx = self.video_tree.index(self.video_checked_iid)
+        except tk.TclError:
+            return None
+        if idx >= len(self.formats):
+            return None
+        return self.formats[idx]
+
+    def _get_checked_audio(self):
+        if self.audio_checked_iid is None:
+            return None
+        try:
+            idx = self.audio_tree.index(self.audio_checked_iid)
+        except tk.TclError:
+            return None
+        if idx >= len(self.audio_formats):
+            return None
+        return self.audio_formats[idx]
+
+    def _download(self):
+        v = self._get_checked_video()
+        if v is None:
+            messagebox.showwarning("提示", "请在视频列表中勾选一个格式")
+            return
+
+        a = self._get_checked_audio()
+
+        if v["_has_audio"]:
+            # 视频已含音频，直接下载，无需合并（避免重复下载）
+            fmt_str = v["id"]
+        elif a is not None:
+            # 纯视频 + 用户选了音频 → 合并
+            if not self._has_ffmpeg:
+                messagebox.showwarning(
+                    "缺少 ffmpeg",
+                    "未检测到 ffmpeg，YouTube 视频音视频分离，需要 ffmpeg 合并。\n\n"
+                    "请安装 ffmpeg 并添加到系统 PATH。\n"
+                    "下载地址: https://ffmpeg.org/download.html")
+                return
+            fmt_str = f"{v['id']}+{a['id']}"
+        else:
+            messagebox.showwarning("提示", "该视频格式不含音频，请在音频列表中勾选一个格式")
+            return
+
+        print(f"下载格式: {fmt_str}")
+        self._start(fmt_str)
+
+    def _start(self, fmt_str):
+        url = self.url_entry.get().strip()
+        if not url:
+            return
+        self.dl_btn.config(state=tk.DISABLED)
+        self.progress["value"] = 0
+        self.status_var.set("正在下载...")
+        threading.Thread(target=self._do_download, args=(url, fmt_str), daemon=True).start()
+
+    def _progress_hook(self, d):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes", 0)
+            if total > 0:
+                pct = int(downloaded / total * 100)
+                speed = d.get("speed")
+                speed_str = f"{speed / 1024**2:.1f} MB/s" if speed else "--"
+                # 显示当前下载的是视频还是音频
+                info = d.get("info_dict", {})
+                fmt_note = info.get("format_note", "") or info.get("format", "") or ""
+                self.root.after(0, self._update_progress, pct,
+                                f"下载中... {pct}% — {speed_str} [{fmt_note}]")
+        elif d["status"] == "finished":
+            info = d.get("info_dict", {})
+            fmt_note = info.get("format_note", "") or info.get("format", "") or ""
+            self.root.after(0, self._update_progress, 100,
+                            f"下载完成: {fmt_note}，正在合并...")
+        elif d["status"] == "error":
+            self.root.after(0, self._update_progress, 0, "下载出错")
+        elif d["status"] == "processing":
+            self.root.after(0, self._update_progress, 100, "正在合并音视频...")
+
+    def _update_progress(self, pct, msg):
+        self.progress["value"] = pct
+        self.status_var.set(msg)
+
+    class _Logger:
+        """捕获 yt-dlp 输出到控制台，方便诊断"""
+        def debug(self, msg): print(f"[yt-dlp] {msg}") if msg.strip() else None
+        def info(self, msg): print(f"[yt-dlp] {msg}") if msg.strip() else None
+        def warning(self, msg): print(f"[yt-dlp WARN] {msg}") if msg.strip() else None
+        def error(self, msg): print(f"[yt-dlp ERROR] {msg}") if msg.strip() else None
+
+    def _do_download(self, url, fmt_str):
+        outtmpl = os.path.join(self.output_dir, "%(title)s.%(ext)s")
+        opts = {
+            "format": fmt_str,
+            "outtmpl": outtmpl,
+            "progress_hooks": [self._progress_hook],
+            "logger": self._Logger(),
+            "verbose": True,
+            "js_runtimes": {"node": {}},
+        }
+        opts.update(self._build_login_opts())
+
+        print(f"\n===== 开始下载: {url}")
+        print(f"===== 格式: {fmt_str}")
+        print(f"===== 输出目录: {self.output_dir}")
+
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            self.root.after(0, self._on_error, f"下载失败: {e}")
+            return
+        self.root.after(0, self._on_success)
+
+    def _on_error(self, msg):
+        self.dl_btn.config(state=tk.NORMAL)
+        self.progress["value"] = 0
+        self.status_var.set("下载失败")
+        messagebox.showerror("错误", msg)
+
+    def _on_success(self):
+        self.dl_btn.config(state=tk.NORMAL)
+        self.progress["value"] = 100
+        self.status_var.set(f"下载完成 → {self.output_dir}")
+        messagebox.showinfo("完成", f"视频已保存到:\n{self.output_dir}")
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    YoutubeDownloader().run()

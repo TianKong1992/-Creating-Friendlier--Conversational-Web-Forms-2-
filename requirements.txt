@@ -1,0 +1,5 @@
+pyautogui>=0.9.54
+easyocr>=1.7.0
+numpy>=1.24.0
+keyboard>=0.13.5
+Pillow>=10.0.0
