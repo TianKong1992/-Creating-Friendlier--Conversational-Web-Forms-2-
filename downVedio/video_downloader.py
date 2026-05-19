@@ -83,7 +83,6 @@ class VideoDownloader:
         self.bili_title = ""
         self.bili_author = ""
         self.bili_v_checked = None
-        self.bili_a_checked = None
         self.bili_cookie_mode = "none"
         self.bili_cookie_file = ""
 
@@ -107,7 +106,6 @@ class VideoDownloader:
         self.yt_title = ""
         self.yt_author = ""
         self.yt_v_checked = None
-        self.yt_a_checked = None
         self.yt_use_cookies = False
         self.yt_cookies_browser = "firefox"
 
@@ -116,7 +114,6 @@ class VideoDownloader:
         self.xhs_title = ""
         self.xhs_author = ""
         self.xhs_checked = None
-        self.xhs_cookie_file = ""
 
     # ═══════════════════════════════════════════════════════════════
     # 通用工具方法
@@ -330,23 +327,6 @@ class VideoDownloader:
         self.bili_video_tree.bind("<ButtonRelease-1>",
             self._on_tree_select(self.bili_video_tree, self._bili_v_ref, "vselect"))
 
-        # 音频格式列表
-        af = ttk.LabelFrame(p, text="音频格式 (勾选一个)", padding="4")
-        af.pack(fill=tk.BOTH, expand=True, padx=8, pady=(6, 0))
-        a_cols = ("aselect", "aid", "quality", "codec", "abr", "filesize")
-        self.bili_audio_tree = ttk.Treeview(af, columns=a_cols, show="headings", height=3, selectmode="none")
-        for col, txt, w in zip(a_cols, ["☐", "格式ID", "音质", "编码", "码率", "文件大小"],
-                               [36, 70, 100, 130, 85, 100]):
-            self.bili_audio_tree.heading(col, text=txt)
-            self.bili_audio_tree.column(col, width=w, anchor=tk.CENTER)
-        as_ = ttk.Scrollbar(af, orient=tk.VERTICAL, command=self.bili_audio_tree.yview)
-        self.bili_audio_tree.configure(yscrollcommand=as_.set)
-        self.bili_audio_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        as_.pack(side=tk.RIGHT, fill=tk.Y)
-        self._bili_a_ref = [None]
-        self.bili_audio_tree.bind("<ButtonRelease-1>",
-            self._on_tree_select(self.bili_audio_tree, self._bili_a_ref, "aselect"))
-
         # 视频信息
         self.bili_title_var, self.bili_author_var = self._make_info_frame(p)
 
@@ -528,7 +508,7 @@ class VideoDownloader:
             vf.append({"id": f.get("format_id", ""), "quality": f.get("format_note") or f.get("format", ""),
                        "resolution": resolution, "codec": vcodec.split(".")[0] if vcodec else "未知",
                        "vbr": self._format_bitrate(vbr), "filesize": self._format_bytes(fs),
-                       "_height": height, "_vbr": vbr, "_bytes": fs})
+                       "_height": height, "_vbr": vbr, "_bytes": fs, "_has_audio": acodec != "none"})
 
         vf = self._deduplicate_formats(vf, lambda x: (x["_height"], x["codec"]))
         af = self._deduplicate_formats(af, lambda x: (x["_abr"], x["codec"]))
@@ -544,15 +524,12 @@ class VideoDownloader:
     def _bili_query_ok(self, vf, af):
         self.bili_query_btn.config(state=tk.NORMAL)
         self.bili_formats, self.bili_audio_formats = vf, af
-        self._bili_v_ref[0] = self._bili_a_ref[0] = None
+        self._bili_v_ref[0] = None
         self.bili_video_tree.delete(*self.bili_video_tree.get_children())
-        self.bili_audio_tree.delete(*self.bili_audio_tree.get_children())
         self.bili_title_var.set(self.bili_title)
         self.bili_author_var.set(f"@{self.bili_author}" if self.bili_author else "")
         for f in vf:
             self.bili_video_tree.insert("", tk.END, values=("☐", f["id"], f["quality"], f["resolution"], f["codec"], f["vbr"], f["filesize"]))
-        for f in af:
-            self.bili_audio_tree.insert("", tk.END, values=("☐", f["id"], f["quality"], f["codec"], f["abr"], f["filesize"]))
         if vf:
             b = vf[0]
             self.bili_status_var.set(f"查询完成 — {self.bili_title} — 视频: {len(vf)} 个, 音频: {len(af)} 个, 最佳: {b['quality']} {b['resolution']}")
@@ -563,20 +540,26 @@ class VideoDownloader:
         if not self.agree_var.get():
             messagebox.showwarning("提示", "请先勾选同意「用户协议/免责声明」")
             return
-        if not self.bili_formats or not self.bili_audio_formats:
+        if not self.bili_formats:
             messagebox.showwarning("提示", "请先查询视频信息")
             return
         v = self._get_checked(self.bili_video_tree, self._bili_v_ref, self.bili_formats)
-        a = self._get_checked(self.bili_audio_tree, self._bili_a_ref, self.bili_audio_formats)
         if v is None:
             v = self.bili_formats[0]
-        if a is None:
+        if v["_has_audio"]:
+            fmt_str = v["id"]
+        elif self.bili_audio_formats:
+            if not self._has_ffmpeg:
+                messagebox.showwarning("缺少 ffmpeg", "未检测到 ffmpeg，B站视频音视频分离，需要 ffmpeg 合并。\n\n下载地址: https://ffmpeg.org/download.html")
+                return
             a = self.bili_audio_formats[0]
-        if not self._has_ffmpeg:
-            messagebox.showwarning("缺少 ffmpeg", "未检测到 ffmpeg，B站视频音视频分离，需要 ffmpeg 合并。\n\n下载地址: https://ffmpeg.org/download.html")
+            fmt_str = f"{v['id']}+{a['id']}"
+            print(f"视频不含音频，自动选择最佳音频: {a['id']}")
+        else:
+            messagebox.showwarning("提示", "该视频格式不含音频且无可用的独立音频流")
             return
-        print(f"下载格式: {v['id']}+{a['id']}")
-        self._bili_start(f"{v['id']}+{a['id']}")
+        print(f"下载格式: {fmt_str}")
+        self._bili_start(fmt_str)
 
     def _bili_start(self, fmt_str):
         url = self.bili_url_entry.get().strip()
@@ -625,18 +608,6 @@ class VideoDownloader:
 
         self.dy_url_entry, self.dy_query_btn, _ = self._make_url_row(p, self._dy_query)
 
-        # 登录
-        lf = ttk.LabelFrame(p, text="抖音登录 (获取Cookie)", padding="6")
-        lf.pack(fill=tk.X, padx=8, pady=(4, 0))
-        r1 = ttk.Frame(lf)
-        r1.pack(fill=tk.X, pady=(0, 4))
-        self.dy_login_btn = ttk.Button(r1, text="获取登录状态", command=self._dy_login)
-        self.dy_login_btn.pack(side=tk.LEFT)
-        self.dy_login_var = tk.StringVar(value="未登录 — 推荐 Firefox 登录 douyin.com")
-        ttk.Label(lf, textvariable=self.dy_login_var, foreground="gray").pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(lf, text="步骤: ① 用 Firefox 打开并登录 douyin.com → ② 点击「获取登录状态」",
-                  foreground="#0066cc").pack(anchor=tk.W, pady=(2, 0))
-
         # 格式列表
         ff = ttk.LabelFrame(p, text="视频格式 (勾选一个)", padding="4")
         ff.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
@@ -681,64 +652,6 @@ class VideoDownloader:
     def _dy_extract_id(url):
         m = re.search(r'/video/(\d+)', url)
         return m.group(1) if m else None
-
-    # ── 抖音 登录 ─────────────────────────────────────────────────
-
-    def _dy_login(self):
-        self.dy_login_btn.config(state=tk.DISABLED)
-        self.dy_login_var.set("正在读取 Firefox 中的抖音 Cookie...")
-        threading.Thread(target=self._dy_do_login, args=("firefox",), daemon=True).start()
-
-    def _dy_do_login(self, browser):
-        from yt_dlp.cookies import extract_cookies_from_browser
-        try:
-            cj = extract_cookies_from_browser(browser)
-        except PermissionError:
-            self.root.after(0, self._dy_login_err, f"读取 {browser.title()} Cookie 失败，请关闭浏览器后重试")
-            return
-        except FileNotFoundError:
-            self.root.after(0, self._dy_login_err, f"未找到 {browser.title()} 浏览器数据")
-            return
-        except Exception as e:
-            err = str(e).lower()
-            if any(kw in err for kw in ("decrypt", "dpapi", "keyring")):
-                self.root.after(0, self._dy_login_err, f"{browser.title()} Cookie 解密失败（App-Bound Encryption）。\n请改用 Firefox。")
-            else:
-                self.root.after(0, self._dy_login_err, f"提取 Cookie 失败: {str(e)[:250]}")
-            return
-
-        douyin = [c for c in cj if "douyin.com" in c.domain]
-        if not douyin:
-            self.root.after(0, self._dy_login_err, "未找到 douyin.com 的 Cookie，请先在浏览器中登录。")
-            return
-
-        pw = []
-        for c in cj:
-            if "douyin.com" not in c.domain:
-                continue
-            expires = c.expires if c.expires else 2147483647
-            http_only = False
-            if hasattr(c, 'has_nonstandard_attr'):
-                try:
-                    http_only = c.has_nonstandard_attr('HttpOnly')
-                except Exception:
-                    pass
-            pw.append({"name": c.name, "value": c.value, "domain": c.domain.lstrip("."),
-                       "path": c.path or "/", "expires": expires, "secure": bool(c.secure),
-                       "httpOnly": http_only, "sameSite": "Lax"})
-        with self.dy_lock:
-            self.dy_cookies = pw
-        self.root.after(0, self._dy_login_ok, len(pw))
-
-    def _dy_login_ok(self, count):
-        self.dy_login_btn.config(state=tk.NORMAL)
-        self.dy_login_var.set(f"已登录 ({count} 个 Cookie)")
-        self.dy_login_btn.config(foreground="green")
-
-    def _dy_login_err(self, msg):
-        self.dy_login_btn.config(state=tk.NORMAL)
-        self.dy_login_var.set("未登录")
-        messagebox.showerror("获取失败", msg)
 
     # ── 抖音 查询 ─────────────────────────────────────────────────
 
@@ -1161,23 +1074,6 @@ class VideoDownloader:
         self.yt_video_tree.bind("<ButtonRelease-1>",
             self._on_tree_select(self.yt_video_tree, self._yt_v_ref, "vselect"))
 
-        # 音频格式
-        af = ttk.LabelFrame(p, text="音频格式 (视频无内嵌音频时需勾选)", padding="4")
-        af.pack(fill=tk.BOTH, expand=True, padx=8, pady=(6, 0))
-        a_cols = ("aselect", "aid", "quality", "codec", "abr", "filesize")
-        self.yt_audio_tree = ttk.Treeview(af, columns=a_cols, show="headings", height=3, selectmode="none")
-        for col, txt, w in zip(a_cols, ["☐", "格式ID", "音质", "编码", "码率", "文件大小"],
-                               [36, 70, 100, 130, 85, 100]):
-            self.yt_audio_tree.heading(col, text=txt)
-            self.yt_audio_tree.column(col, width=w, anchor=tk.CENTER)
-        as_ = ttk.Scrollbar(af, orient=tk.VERTICAL, command=self.yt_audio_tree.yview)
-        self.yt_audio_tree.configure(yscrollcommand=as_.set)
-        self.yt_audio_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        as_.pack(side=tk.RIGHT, fill=tk.Y)
-        self._yt_a_ref = [None]
-        self.yt_audio_tree.bind("<ButtonRelease-1>",
-            self._on_tree_select(self.yt_audio_tree, self._yt_a_ref, "aselect"))
-
         self.yt_title_var, self.yt_author_var = self._make_info_frame(p)
         self.yt_dir_var = self._make_dir_row(p)
         self.yt_progress = self._make_progress_bar(p)
@@ -1232,6 +1128,9 @@ class VideoDownloader:
     # ── YouTube 查询 ──────────────────────────────────────────────
 
     def _yt_query(self):
+        if not self.yt_use_cookies:
+            messagebox.showwarning("未登录", "请先点击「获取登录状态」登录 YouTube 后再查询")
+            return
         url = self.yt_url_entry.get().strip()
         if not url:
             messagebox.showwarning("提示", "请先输入视频链接")
@@ -1302,15 +1201,12 @@ class VideoDownloader:
     def _yt_query_ok(self, vf, af):
         self.yt_query_btn.config(state=tk.NORMAL)
         self.yt_formats, self.yt_audio_formats = vf, af
-        self._yt_v_ref[0] = self._yt_a_ref[0] = None
+        self._yt_v_ref[0] = None
         self.yt_video_tree.delete(*self.yt_video_tree.get_children())
-        self.yt_audio_tree.delete(*self.yt_audio_tree.get_children())
         self.yt_title_var.set(self.yt_title)
         self.yt_author_var.set(f"@{self.yt_author}" if self.yt_author else "")
         for f in vf:
             self.yt_video_tree.insert("", tk.END, values=("☐", f["id"], f["quality"], f["resolution"], f["codec"], f["vbr"], f["filesize"]))
-        for f in af:
-            self.yt_audio_tree.insert("", tk.END, values=("☐", f["id"], f["quality"], f["codec"], f["abr"], f["filesize"]))
         if vf:
             b = vf[0]
             self.yt_status_var.set(f"查询完成 — {self.yt_title} — 视频: {len(vf)} 个, 音频: {len(af)} 个, 最佳: {b['quality']} {b['resolution']}")
@@ -1327,22 +1223,17 @@ class VideoDownloader:
             messagebox.showwarning("提示", "请先查询视频信息")
             return
         v = self._get_checked(self.yt_video_tree, self._yt_v_ref, self.yt_formats)
-        a = self._get_checked(self.yt_audio_tree, self._yt_a_ref, self.yt_audio_formats)
         if v is None:
             v = self.yt_formats[0]
         if v["_has_audio"]:
             fmt_str = v["id"]
-        elif a is not None:
-            if not self._has_ffmpeg:
-                messagebox.showwarning("缺少 ffmpeg", "未检测到 ffmpeg，需要安装 ffmpeg。\n下载地址: https://ffmpeg.org/download.html")
-                return
-            fmt_str = f"{v['id']}+{a['id']}"
         elif self.yt_audio_formats:
             if not self._has_ffmpeg:
                 messagebox.showwarning("缺少 ffmpeg", "未检测到 ffmpeg，需要安装 ffmpeg。\n下载地址: https://ffmpeg.org/download.html")
                 return
             a = self.yt_audio_formats[0]
             fmt_str = f"{v['id']}+{a['id']}"
+            print(f"视频不含音频，自动选择最佳音频: {a['id']}")
         else:
             messagebox.showwarning("提示", "该视频格式不含音频且无可用的独立音频流")
             return
@@ -1408,14 +1299,6 @@ class VideoDownloader:
 
         self.xhs_url_entry, self.xhs_query_btn, _ = self._make_url_row(p, self._xhs_query)
 
-        # Cookie
-        cf = ttk.Frame(p, padding="0 0 8 0")
-        cf.pack(fill=tk.X, padx=8)
-        ttk.Label(cf, text="Cookie:").pack(side=tk.LEFT)
-        ttk.Button(cf, text="加载 cookies.txt", command=self._xhs_load_cookie).pack(side=tk.LEFT, padx=(6, 8))
-        self.xhs_cookie_var = tk.StringVar(value="未加载 (公开视频无需登录)")
-        ttk.Label(cf, textvariable=self.xhs_cookie_var, foreground="gray").pack(side=tk.LEFT)
-
         # 格式列表
         ff = ttk.LabelFrame(p, text="可用画质 (勾选一个)", padding="4")
         ff.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
@@ -1441,12 +1324,6 @@ class VideoDownloader:
         self.xhs_status_var.set("就绪 — 粘贴小红书笔记链接后点击查询")
         p.bind("<Return>", lambda e: self._xhs_query())
 
-    def _xhs_load_cookie(self):
-        path = filedialog.askopenfilename(title="选择 Cookies 文件", filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
-        if path and os.path.exists(path):
-            self.xhs_cookie_file = path
-            self.xhs_cookie_var.set(f"已加载: {os.path.basename(path)}")
-
     def _xhs_query(self):
         url = self.xhs_url_entry.get().strip()
         if not url:
@@ -1458,13 +1335,11 @@ class VideoDownloader:
 
     def _xhs_do_query(self, url):
         opts = {"quiet": True, "no_warnings": True}
-        if self.xhs_cookie_file and os.path.exists(self.xhs_cookie_file):
-            opts["cookiefile"] = self.xhs_cookie_file
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
-            self.root.after(0, self._xhs_query_err, f"获取信息失败: {e}\n\n请确认链接有效，或尝试加载 Cookie 后重试")
+            self.root.after(0, self._xhs_query_err, f"获取信息失败: {e}")
             return
 
         self.xhs_title = info.get("title") or info.get("fulltitle") or "未知"
@@ -1557,8 +1432,6 @@ class VideoDownloader:
             "format": fmt_id, "outtmpl": os.path.join(self.output_dir, "%(title)s.%(ext)s"),
             "progress_hooks": [self._xhs_progress_hook], "quiet": True, "no_warnings": True,
         }
-        if self.xhs_cookie_file and os.path.exists(self.xhs_cookie_file):
-            opts["cookiefile"] = self.xhs_cookie_file
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
