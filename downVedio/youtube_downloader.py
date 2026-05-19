@@ -16,9 +16,9 @@ class YoutubeDownloader:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("YouTube 视频下载器")
-        self.root.geometry("860x660")
+        self.root.geometry("860x720")
         self.root.resizable(True, True)
-        self.root.minsize(720, 540)
+        self.root.minsize(720, 600)
 
         self.formats = []
         self.audio_formats = []
@@ -28,6 +28,8 @@ class YoutubeDownloader:
 
         self.video_checked_iid = None
         self.audio_checked_iid = None
+        self.agree_var = tk.BooleanVar(value=False)
+        self.video_author = ""
 
         self._use_cookies = False
         self._cookies_browser = "firefox"
@@ -71,20 +73,13 @@ class YoutubeDownloader:
         row1 = ttk.Frame(login_frame)
         row1.pack(fill=tk.X, pady=(0, 4))
 
-        ttk.Label(row1, text="浏览器:").pack(side=tk.LEFT)
-        self.browser_var = tk.StringVar(value="Firefox")
-        self.browser_combo = ttk.Combobox(
-            row1, textvariable=self.browser_var,
-            values=["Firefox (推荐)", "Chrome", "Edge", "Brave", "Opera"],
-            state="readonly", width=14)
-        self.browser_combo.pack(side=tk.LEFT, padx=(4, 8))
-
         self.login_btn = ttk.Button(row1, text="获取登录状态", command=self._browser_login)
-        self.login_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.login_btn.pack(side=tk.LEFT)
 
         self.login_status_var = tk.StringVar(value="未登录 — 推荐使用 Firefox 登录 YouTube，Chrome/Edge 无法解密 Cookie")
-        ttk.Label(login_frame, textvariable=self.login_status_var,
-                  foreground="gray").pack(anchor=tk.W, pady=(4, 0))
+        self.login_status_label = ttk.Label(login_frame, textvariable=self.login_status_var,
+                                            foreground="gray")
+        self.login_status_label.pack(anchor=tk.W, pady=(4, 0))
 
         ttk.Label(login_frame, text="步骤: ① 用 Firefox 登录 youtube.com → ② 点击「获取登录状态」",
                   foreground="#0066cc").pack(anchor=tk.W, pady=(2, 0))
@@ -95,7 +90,7 @@ class YoutubeDownloader:
 
         v_cols = ("vselect", "id", "quality", "resolution", "codec", "vbr", "filesize")
         self.video_tree = ttk.Treeview(vf, columns=v_cols, show="headings",
-                                       height=6, selectmode="none")
+                                       height=5, selectmode="none")
         self.video_tree.heading("vselect", text="☐")
         self.video_tree.heading("id", text="格式ID")
         self.video_tree.heading("quality", text="画质")
@@ -143,6 +138,18 @@ class YoutubeDownloader:
         as_.pack(side=tk.RIGHT, fill=tk.Y)
         self.audio_tree.bind("<ButtonRelease-1>", self._on_audio_click)
 
+        # 视频信息显示
+        info_frame = ttk.LabelFrame(self.root, text="视频信息", padding="6")
+        info_frame.pack(fill=tk.X, padx=8, pady=(6, 0))
+        self.video_title_var = tk.StringVar(value="")
+        ttk.Label(info_frame, textvariable=self.video_title_var,
+                  font=("", 11, "bold"), wraplength=700).pack(anchor=tk.W)
+        self.video_author_var = tk.StringVar(value="")
+        ttk.Label(info_frame, textvariable=self.video_author_var,
+                  foreground="#888", wraplength=700).pack(anchor=tk.W, pady=(2, 0))
+        self.copy_info_btn = ttk.Button(info_frame, text="复制信息", command=self._copy_video_info)
+        self.copy_info_btn.pack(anchor=tk.W, pady=(4, 0))
+
         # 保存目录
         dir_frame = ttk.Frame(self.root, padding="8 4 8 4")
         dir_frame.pack(fill=tk.X)
@@ -158,11 +165,28 @@ class YoutubeDownloader:
         self.progress = ttk.Progressbar(prog_frame, mode="determinate")
         self.progress.pack(fill=tk.X)
 
-        # 下载按钮
+        # 下载按钮 + 用户协议
         btn_frame = ttk.Frame(self.root, padding="8 4 8 8")
         btn_frame.pack(fill=tk.X)
         self.dl_btn = ttk.Button(btn_frame, text="下载选中画质", command=self._download)
         self.dl_btn.pack(side=tk.LEFT)
+
+        self.agree_cb = ttk.Checkbutton(btn_frame, variable=self.agree_var)
+        self.agree_cb.pack(side=tk.LEFT, padx=(12, 0))
+        self._disclaimer_text = (
+            "本软件仅为技术工具，提供公开网络视频资源的下载辅助功能，"
+            "不存储、不托管、不分享任何视频内容，不拥有任何下载内容的版权。\n\n"
+            "用户使用本软件仅限个人学习、研究、欣赏等非商业用途，"
+            "且必须获得原作品权利人的合法授权。严禁用于商业盈利、二次分发、公开传播、侵权搬运。\n\n"
+            "任何因未经授权下载、传播、商用导致的版权侵权、法律纠纷、赔偿责任，"
+            "全部由用户自行承担，与本软件开发者无关。\n\n"
+            "使用即同意：下载、安装、使用本软件，即表示您已阅读、理解并同意本声明全部条款。"
+        )
+        self.agree_link = ttk.Label(btn_frame, text="用户协议/免责声明",
+                                    foreground="blue", cursor="hand2")
+        self.agree_link.pack(side=tk.LEFT, padx=(4, 0))
+        self.agree_link.bind("<Button-1>", lambda e: messagebox.showinfo(
+            "免责声明 / 用户协议", self._disclaimer_text))
 
         # 状态栏
         self.status_var = tk.StringVar(value="就绪 — 粘贴YouTube链接，点击查询")
@@ -172,10 +196,9 @@ class YoutubeDownloader:
     # ── 登录 ──────────────────────────────────────────────────────
 
     def _browser_login(self):
-        browser = self.browser_var.get().replace(" (推荐)", "").lower()
         self.login_btn.config(state=tk.DISABLED)
-        self.login_status_var.set("正在检测浏览器中的 YouTube 登录状态...")
-        threading.Thread(target=self._do_browser_login, args=(browser,), daemon=True).start()
+        self.login_status_var.set("正在检测 Firefox 中的 YouTube 登录状态...")
+        threading.Thread(target=self._do_browser_login, args=("firefox",), daemon=True).start()
 
     def _do_browser_login(self, browser):
         opts = {
@@ -219,13 +242,10 @@ class YoutubeDownloader:
                 self.root.after(0, self._on_login_error,
                               f"检测失败: {str(e)[:250]}")
 
-    def _on_login_success(self, browser):
+    def _on_login_success(self, _browser):
         self.login_btn.config(state=tk.NORMAL)
-        self.login_status_var.set(f"已登录 ✓ ({browser}) — 可访问年龄限制内容")
-        messagebox.showinfo(
-            "登录成功",
-            f"已检测到 {browser.title()} 中的 YouTube 登录状态！"
-        )
+        self.login_status_var.set("已登录")
+        self.login_status_label.config(foreground="green")
 
     def _on_login_error(self, msg):
         self.login_btn.config(state=tk.NORMAL)
@@ -272,6 +292,19 @@ class YoutubeDownloader:
         if chosen:
             self.output_dir = chosen
             self.dir_var.set(chosen)
+
+    def _copy_video_info(self):
+        parts = []
+        if self.video_title:
+            parts.append(self.video_title)
+        if self.video_author:
+            parts.append(f"@{self.video_author}")
+        if parts:
+            self.root.clipboard_clear()
+            self.root.clipboard_append("\n".join(parts))
+            self.status_var.set("视频信息已复制到剪贴板")
+        else:
+            messagebox.showwarning("提示", "暂无视频信息，请先查询")
 
     # ── 查询 ──────────────────────────────────────────────────────
 
@@ -330,6 +363,7 @@ class YoutubeDownloader:
             return
 
         self.video_title = info.get("title", "未知")
+        self.video_author = info.get("uploader") or info.get("channel") or ""
         duration = info.get("duration") or 0
         raw_formats = info.get("formats", [])
 
@@ -421,6 +455,10 @@ class YoutubeDownloader:
         self.video_tree.delete(*self.video_tree.get_children())
         self.audio_tree.delete(*self.audio_tree.get_children())
 
+        self.video_title_var.set(self.video_title)
+        author_text = f"@{self.video_author}" if self.video_author else ""
+        self.video_author_var.set(author_text)
+
         for f in video_formats:
             self.video_tree.insert("", tk.END, values=(
                 "☐", f["id"], f["quality"], f["resolution"],
@@ -465,6 +503,9 @@ class YoutubeDownloader:
         return self.audio_formats[idx]
 
     def _download(self):
+        if not self.agree_var.get():
+            messagebox.showwarning("提示", "请先勾选同意「用户协议/免责声明」")
+            return
         v = self._get_checked_video()
         if v is None:
             messagebox.showwarning("提示", "请在视频列表中勾选一个格式")

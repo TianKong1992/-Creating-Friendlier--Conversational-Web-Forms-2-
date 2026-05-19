@@ -1,32 +1,59 @@
 """
-虎牙视频下载器 — 基于 yt-dlp 的 huya:video 提取器
-虎牙的 HLS(m3u8) 格式自带音视频，无需 ffmpeg 合并
+小红书视频下载器 — 基于 yt-dlp 的小红书提取器
+小红书视频为单流 (音视频合并)，无需 ffmpeg 分离合并
+部分高清视频可能需要登录 Cookie
 """
 import os
-import sys
 import threading
+import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import yt_dlp
 
 
-class HuyaDownloader:
+class XiaohongshuDownloader:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("虎牙视频下载器")
-        self.root.geometry("780x500")
+        self.root.title("小红书下载器")
+        self.root.geometry("780x620")
         self.root.resizable(True, True)
-        self.root.minsize(600, 400)
+        self.root.minsize(640, 480)
 
         self.formats = []
         self.video_title = ""
         self.output_dir = os.path.expanduser("~\\Downloads")
+        self._has_ffmpeg = self._check_ffmpeg()
+
         self.checked_iid = None
         self.agree_var = tk.BooleanVar(value=False)
         self.video_author = ""
+        self._cookie_file = ""
 
         self._build_ui()
+
+    # ── ffmpeg 检测 ───────────────────────────────────────────────
+
+    @staticmethod
+    def _check_ffmpeg():
+        try:
+            subprocess.run(["ffmpeg", "-version"],
+                           capture_output=True, timeout=5)
+            return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    # ── Cookie 配置 ───────────────────────────────────────────────
+
+    def _load_cookie_file(self):
+        path = filedialog.askopenfilename(
+            title="选择 Cookies 文件",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if path and os.path.exists(path):
+            self._cookie_file = path
+            self.cookie_status_var.set(f"已加载: {os.path.basename(path)}")
+            self.cookie_status_label.config(foreground="green")
 
     # ── UI ────────────────────────────────────────────────────────
 
@@ -41,31 +68,44 @@ class HuyaDownloader:
         self.query_btn.pack(side=tk.LEFT)
         self.root.bind("<Return>", lambda e: self._query())
 
+        # Cookie 加载
+        cookie_frame = ttk.Frame(self.root, padding="0 0 8 0")
+        cookie_frame.pack(fill=tk.X, padx=8)
+        ttk.Label(cookie_frame, text="Cookie:").pack(side=tk.LEFT)
+        ttk.Button(cookie_frame, text="加载 cookies.txt",
+                   command=self._load_cookie_file).pack(side=tk.LEFT, padx=(6, 8))
+        self.cookie_status_var = tk.StringVar(value="未加载 (公开视频无需登录)")
+        self.cookie_status_label = ttk.Label(
+            cookie_frame, textvariable=self.cookie_status_var, foreground="gray")
+        self.cookie_status_label.pack(side=tk.LEFT)
+
         # 格式列表
-        fmt_frame = ttk.LabelFrame(self.root, text="可用格式 (勾选一个)", padding="4")
-        fmt_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
+        ff = ttk.LabelFrame(self.root, text="可用画质 (勾选一个)", padding="4")
+        ff.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
 
-        columns = ("select", "quality", "resolution", "ext", "protocol", "filesize")
-        self.tree = ttk.Treeview(fmt_frame, columns=columns, show="headings",
-                                 height=6, selectmode="none")
-        self.tree.heading("select", text="☐")
-        self.tree.heading("quality", text="画质")
-        self.tree.heading("resolution", text="分辨率")
-        self.tree.heading("ext", text="格式")
-        self.tree.heading("protocol", text="协议")
-        self.tree.heading("filesize", text="文件大小")
-        self.tree.column("select", width=36, anchor=tk.CENTER)
-        self.tree.column("quality", width=100, anchor=tk.CENTER)
-        self.tree.column("resolution", width=120, anchor=tk.CENTER)
-        self.tree.column("ext", width=60, anchor=tk.CENTER)
-        self.tree.column("protocol", width=100, anchor=tk.CENTER)
-        self.tree.column("filesize", width=100, anchor=tk.CENTER)
+        cols = ("select", "id", "quality", "resolution", "codec", "bitrate", "filesize")
+        self.format_tree = ttk.Treeview(ff, columns=cols, show="headings",
+                                        height=8, selectmode="none")
+        self.format_tree.heading("select", text="☐")
+        self.format_tree.heading("id", text="格式ID")
+        self.format_tree.heading("quality", text="画质")
+        self.format_tree.heading("resolution", text="分辨率")
+        self.format_tree.heading("codec", text="编码")
+        self.format_tree.heading("bitrate", text="码率")
+        self.format_tree.heading("filesize", text="文件大小")
+        self.format_tree.column("select", width=36, anchor=tk.CENTER)
+        self.format_tree.column("id", width=80, anchor=tk.CENTER)
+        self.format_tree.column("quality", width=100, anchor=tk.CENTER)
+        self.format_tree.column("resolution", width=110, anchor=tk.CENTER)
+        self.format_tree.column("codec", width=140, anchor=tk.CENTER)
+        self.format_tree.column("bitrate", width=90, anchor=tk.CENTER)
+        self.format_tree.column("filesize", width=100, anchor=tk.CENTER)
 
-        scroll = ttk.Scrollbar(fmt_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.bind("<ButtonRelease-1>", self._on_click)
+        fs = ttk.Scrollbar(ff, orient=tk.VERTICAL, command=self.format_tree.yview)
+        self.format_tree.configure(yscrollcommand=fs.set)
+        self.format_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        fs.pack(side=tk.RIGHT, fill=tk.Y)
+        self.format_tree.bind("<ButtonRelease-1>", self._on_format_click)
 
         # 视频信息显示
         info_frame = ttk.LabelFrame(self.root, text="视频信息", padding="6")
@@ -94,15 +134,13 @@ class HuyaDownloader:
         self.progress = ttk.Progressbar(prog_frame, mode="determinate")
         self.progress.pack(fill=tk.X)
 
-        # 按钮 + 用户协议
-        bottom = ttk.Frame(self.root, padding="8 4 8 8")
-        bottom.pack(fill=tk.X)
-        self.dl_btn = ttk.Button(bottom, text="下载选中画质", command=self._download)
+        # 下载按钮 + 用户协议
+        btn_frame = ttk.Frame(self.root, padding="8 4 8 8")
+        btn_frame.pack(fill=tk.X)
+        self.dl_btn = ttk.Button(btn_frame, text="下载", command=self._download)
         self.dl_btn.pack(side=tk.LEFT)
-        self.dl_best_btn = ttk.Button(bottom, text="下载最高画质", command=self._download_best)
-        self.dl_best_btn.pack(side=tk.LEFT, padx=(6, 0))
 
-        self.agree_cb = ttk.Checkbutton(bottom, variable=self.agree_var)
+        self.agree_cb = ttk.Checkbutton(btn_frame, variable=self.agree_var)
         self.agree_cb.pack(side=tk.LEFT, padx=(12, 0))
         self._disclaimer_text = (
             "本软件仅为技术工具，提供公开网络视频资源的下载辅助功能，"
@@ -113,36 +151,38 @@ class HuyaDownloader:
             "全部由用户自行承担，与本软件开发者无关。\n\n"
             "使用即同意：下载、安装、使用本软件，即表示您已阅读、理解并同意本声明全部条款。"
         )
-        self.agree_link = ttk.Label(bottom, text="用户协议/免责声明",
+        self.agree_link = ttk.Label(btn_frame, text="用户协议/免责声明",
                                     foreground="blue", cursor="hand2")
         self.agree_link.pack(side=tk.LEFT, padx=(4, 0))
         self.agree_link.bind("<Button-1>", lambda e: messagebox.showinfo(
             "免责声明 / 用户协议", self._disclaimer_text))
 
-        self.status_var = tk.StringVar(value="就绪 — 请粘贴虎牙视频链接并点击查询")
+        # 状态栏
+        self.status_var = tk.StringVar(value="就绪 — 粘贴小红书笔记链接后点击查询")
         ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN,
                   anchor=tk.W, padding="4 2 4 2").pack(fill=tk.X, side=tk.BOTTOM)
 
     # ── 格式选择 ──────────────────────────────────────────────────
 
-    def _on_click(self, event):
-        col = self.tree.identify_column(event.x)
+    def _on_format_click(self, event):
+        col = self.format_tree.identify_column(event.x)
         if col != "#1":
             return
-        iid = self.tree.identify_row(event.y)
+        iid = self.format_tree.identify_row(event.y)
         if not iid:
             return
         if self.checked_iid == iid:
-            self.tree.set(iid, "select", "☐")
+            self.format_tree.set(iid, "select", "☐")
             self.checked_iid = None
         else:
             if self.checked_iid:
-                self.tree.set(self.checked_iid, "select", "☐")
-            self.tree.set(iid, "select", "☑")
+                self.format_tree.set(self.checked_iid, "select", "☐")
+            self.format_tree.set(iid, "select", "☑")
             self.checked_iid = iid
 
     def _browse_dir(self):
-        chosen = filedialog.askdirectory(initialdir=self.output_dir, title="选择保存目录")
+        chosen = filedialog.askdirectory(
+            initialdir=self.output_dir, title="选择保存目录")
         if chosen:
             self.output_dir = chosen
             self.dir_var.set(chosen)
@@ -175,27 +215,56 @@ class HuyaDownloader:
     def _format_bytes(size_bytes):
         if size_bytes <= 0:
             return "未知"
-        if size_bytes >= 1024**3:
-            return f"{size_bytes / (1024**3):.1f} GB"
-        if size_bytes >= 1024**2:
-            return f"{size_bytes / (1024**2):.1f} MB"
+        if size_bytes >= 1024 ** 3:
+            return f"{size_bytes / (1024 ** 3):.1f} GB"
+        if size_bytes >= 1024 ** 2:
+            return f"{size_bytes / (1024 ** 2):.1f} MB"
         return f"{size_bytes / 1024:.1f} KB"
 
+    @staticmethod
+    def _format_bitrate(kbps):
+        if kbps <= 0:
+            return "未知"
+        if kbps >= 1000:
+            return f"{kbps / 1000:.1f} Mbps"
+        return f"{kbps:.0f} Kbps"
+
+    @staticmethod
+    def _deduplicate_formats(formats, key_fn):
+        seen = {}
+        for f in formats:
+            k = key_fn(f)
+            if k not in seen or f["_bytes"] > seen[k]["_bytes"]:
+                seen[k] = f
+        return list(seen.values())
+
     def _do_query(self, url):
+        opts = {"quiet": True, "no_warnings": True}
+        if self._cookie_file and os.path.exists(self._cookie_file):
+            opts["cookiefile"] = self._cookie_file
+
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
-            self.root.after(0, self._on_query_error, f"获取信息失败: {e}")
+            self.root.after(0, self._on_query_error,
+                            f"获取信息失败: {e}\n\n请确认链接有效，或尝试加载 Cookie 后重试")
             return
 
-        self.video_title = info.get("title", "未知")
+        self.video_title = info.get("title") or info.get("fulltitle") or "未知"
         self.video_author = info.get("uploader") or info.get("channel") or ""
         duration = info.get("duration") or 0
         raw_formats = info.get("formats", [])
+        all_formats = []
 
-        formats = []
         for f in raw_formats:
+            vcodec = f.get("vcodec") or "none"
+            acodec = f.get("acodec") or "none"
+
+            # 跳过纯音频格式
+            if vcodec == "none" and acodec != "none":
+                continue
+
             height = f.get("height") or 0
             width = f.get("width") or 0
             if width and height:
@@ -205,29 +274,31 @@ class HuyaDownloader:
             else:
                 resolution = "未知"
 
+            tbr = f.get("tbr") or f.get("vbr") or 0
             filesize = f.get("filesize") or f.get("filesize_approx") or 0
-            if not filesize:
-                tbr = f.get("tbr") or 0
-                if tbr and duration:
-                    filesize = int(tbr * 1000 / 8 * duration)
+            if not filesize and tbr and duration:
+                filesize = int(tbr * 1000 / 8 * duration)
 
-            fmt_id = f.get("format_id", "")
-            # 虎牙用描述性 ID 如 "1080P"; 画质列用 quality 字段或 format_note
-            quality_label = f.get("format_note") or fmt_id
+            q = f.get("format_note") or f.get("format") or ""
 
-            formats.append({
-                "id": fmt_id,
-                "quality": quality_label,
+            all_formats.append({
+                "id": f.get("format_id", ""),
+                "quality": q,
                 "resolution": resolution,
-                "ext": f.get("ext", "未知"),
-                "protocol": f.get("protocol", "未知"),
+                "codec": f"{vcodec}/{acodec}".replace(".", ""),
+                "bitrate": self._format_bitrate(tbr),
                 "filesize": self._format_bytes(filesize),
                 "_height": height,
+                "_tbr": tbr,
                 "_bytes": filesize,
             })
 
-        formats.sort(key=lambda x: x["_height"], reverse=True)
-        self.root.after(0, self._on_query_success, formats)
+        # 去重并按分辨率从高到低排序
+        all_formats = self._deduplicate_formats(
+            all_formats, key_fn=lambda f: (f["_height"], f["codec"]))
+        all_formats.sort(key=lambda x: (x["_height"], x["_tbr"]), reverse=True)
+
+        self.root.after(0, self._on_query_success, all_formats)
 
     def _on_query_error(self, msg):
         self.query_btn.config(state=tk.NORMAL)
@@ -238,32 +309,34 @@ class HuyaDownloader:
         self.query_btn.config(state=tk.NORMAL)
         self.formats = formats
         self.checked_iid = None
-        self.tree.delete(*self.tree.get_children())
+
+        self.format_tree.delete(*self.format_tree.get_children())
+        for f in formats:
+            self.format_tree.insert("", tk.END, values=(
+                "☐", f["id"], f["quality"], f["resolution"],
+                f["codec"], f["bitrate"], f["filesize"]))
 
         self.video_title_var.set(self.video_title)
         author_text = f"@{self.video_author}" if self.video_author else ""
         self.video_author_var.set(author_text)
 
-        for f in formats:
-            self.tree.insert("", tk.END, values=(
-                "☐", f["quality"], f["resolution"],
-                f["ext"], f["protocol"], f["filesize"]))
-
         if formats:
             best = formats[0]
             self.status_var.set(
                 f"查询完成 — {self.video_title} — "
-                f"共 {len(formats)} 个格式, 最高: {best['quality']} ({best['resolution']})")
+                f"共 {len(formats)} 个格式, "
+                f"最佳: {best['quality']} {best['resolution']}")
         else:
-            self.status_var.set(f"查询完成 — {self.video_title} — 未找到可用格式")
+            self.status_var.set(
+                f"查询完成 — {self.video_title} — 未找到可用格式")
 
     # ── 下载 ──────────────────────────────────────────────────────
 
-    def _get_checked(self):
+    def _get_checked_format(self):
         if self.checked_iid is None:
             return None
         try:
-            idx = self.tree.index(self.checked_iid)
+            idx = self.format_tree.index(self.checked_iid)
         except tk.TclError:
             return None
         if idx >= len(self.formats):
@@ -274,31 +347,23 @@ class HuyaDownloader:
         if not self.agree_var.get():
             messagebox.showwarning("提示", "请先勾选同意「用户协议/免责声明」")
             return
-        fmt = self._get_checked()
+        fmt = self._get_checked_format()
         if fmt is None:
-            messagebox.showwarning("提示", "请先在列表中勾选一个格式")
-            return
+            if not self.formats:
+                messagebox.showwarning("提示", "请先查询视频信息")
+                return
+            fmt = self.formats[0]
         self._start(fmt["id"])
-
-    def _download_best(self):
-        if not self.agree_var.get():
-            messagebox.showwarning("提示", "请先勾选同意「用户协议/免责声明」")
-            return
-        if not self.formats:
-            messagebox.showwarning("提示", "请先查询视频信息")
-            return
-        self._start(self.formats[0]["id"])
 
     def _start(self, fmt_id):
         url = self.url_entry.get().strip()
         if not url:
             return
         self.dl_btn.config(state=tk.DISABLED)
-        self.dl_best_btn.config(state=tk.DISABLED)
         self.progress["value"] = 0
         self.status_var.set("正在下载...")
-        print(f"下载格式: {fmt_id}")
-        threading.Thread(target=self._do_download, args=(url, fmt_id), daemon=True).start()
+        threading.Thread(target=self._do_download,
+                         args=(url, fmt_id), daemon=True).start()
 
     def _progress_hook(self, d):
         if d["status"] == "downloading":
@@ -307,12 +372,21 @@ class HuyaDownloader:
             if total > 0:
                 pct = int(downloaded / total * 100)
                 speed = d.get("speed")
-                speed_str = f"{speed / 1024**2:.1f} MB/s" if speed else "--"
+                speed_str = f"{speed / 1024 ** 2:.1f} MB/s" if speed else "--"
                 self.root.after(0, self._update_progress, pct,
                                 f"下载中... {pct}% — {speed_str}")
+            else:
+                speed = d.get("speed")
+                speed_str = f"{speed / 1024 ** 2:.1f} MB/s" if speed else "--"
+                self.root.after(0, self._update_progress, -1,
+                                f"下载中... — {speed_str}")
+        elif d["status"] == "finished":
+            self.root.after(0, self._update_progress, 100,
+                            "下载完成，正在处理...")
 
     def _update_progress(self, pct, msg):
-        self.progress["value"] = pct
+        if pct >= 0:
+            self.progress["value"] = pct
         self.status_var.set(msg)
 
     def _do_download(self, url, fmt_id):
@@ -324,6 +398,9 @@ class HuyaDownloader:
             "quiet": True,
             "no_warnings": True,
         }
+        if self._cookie_file and os.path.exists(self._cookie_file):
+            opts["cookiefile"] = self._cookie_file
+
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
@@ -334,14 +411,12 @@ class HuyaDownloader:
 
     def _on_error(self, msg):
         self.dl_btn.config(state=tk.NORMAL)
-        self.dl_best_btn.config(state=tk.NORMAL)
         self.progress["value"] = 0
         self.status_var.set("下载失败")
         messagebox.showerror("错误", msg)
 
     def _on_success(self):
         self.dl_btn.config(state=tk.NORMAL)
-        self.dl_best_btn.config(state=tk.NORMAL)
         self.progress["value"] = 100
         self.status_var.set(f"下载完成 → {self.output_dir}")
         messagebox.showinfo("完成", f"视频已保存到:\n{self.output_dir}")
@@ -351,4 +426,4 @@ class HuyaDownloader:
 
 
 if __name__ == "__main__":
-    HuyaDownloader().run()
+    XiaohongshuDownloader().run()

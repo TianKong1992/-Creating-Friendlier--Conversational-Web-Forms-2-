@@ -31,6 +31,8 @@ class BilibiliDownloader:
 
         self.video_checked_iid = None
         self.audio_checked_iid = None
+        self.agree_var = tk.BooleanVar(value=False)
+        self.video_author = ""
 
         self._cookie_mode = "none"          # "none" | "file"
         self._cookie_file = ""              # cookies.txt 路径
@@ -135,6 +137,18 @@ class BilibiliDownloader:
         as_.pack(side=tk.RIGHT, fill=tk.Y)
         self.audio_tree.bind("<ButtonRelease-1>", self._on_audio_click)
 
+        # 视频信息显示
+        info_frame = ttk.LabelFrame(self.root, text="视频信息", padding="6")
+        info_frame.pack(fill=tk.X, padx=8, pady=(6, 0))
+        self.video_title_var = tk.StringVar(value="")
+        ttk.Label(info_frame, textvariable=self.video_title_var,
+                  font=("", 11, "bold"), wraplength=700).pack(anchor=tk.W)
+        self.video_author_var = tk.StringVar(value="")
+        ttk.Label(info_frame, textvariable=self.video_author_var,
+                  foreground="#888", wraplength=700).pack(anchor=tk.W, pady=(2, 0))
+        self.copy_info_btn = ttk.Button(info_frame, text="复制信息", command=self._copy_video_info)
+        self.copy_info_btn.pack(anchor=tk.W, pady=(4, 0))
+
         # 保存目录
         dir_frame = ttk.Frame(self.root, padding="8 4 8 4")
         dir_frame.pack(fill=tk.X)
@@ -150,11 +164,28 @@ class BilibiliDownloader:
         self.progress = ttk.Progressbar(prog_frame, mode="determinate")
         self.progress.pack(fill=tk.X)
 
-        # 下载按钮
+        # 下载按钮 + 用户协议
         btn_frame = ttk.Frame(self.root, padding="8 4 8 8")
         btn_frame.pack(fill=tk.X)
         self.dl_btn = ttk.Button(btn_frame, text="下载选中画质", command=self._download)
         self.dl_btn.pack(side=tk.LEFT)
+
+        self.agree_cb = ttk.Checkbutton(btn_frame, variable=self.agree_var)
+        self.agree_cb.pack(side=tk.LEFT, padx=(12, 0))
+        self._disclaimer_text = (
+            "本软件仅为技术工具，提供公开网络视频资源的下载辅助功能，"
+            "不存储、不托管、不分享任何视频内容，不拥有任何下载内容的版权。\n\n"
+            "用户使用本软件仅限个人学习、研究、欣赏等非商业用途，"
+            "且必须获得原作品权利人的合法授权。严禁用于商业盈利、二次分发、公开传播、侵权搬运。\n\n"
+            "任何因未经授权下载、传播、商用导致的版权侵权、法律纠纷、赔偿责任，"
+            "全部由用户自行承担，与本软件开发者无关。\n\n"
+            "使用即同意：下载、安装、使用本软件，即表示您已阅读、理解并同意本声明全部条款。"
+        )
+        self.agree_link = ttk.Label(btn_frame, text="用户协议/免责声明",
+                                    foreground="blue", cursor="hand2")
+        self.agree_link.pack(side=tk.LEFT, padx=(4, 0))
+        self.agree_link.bind("<Button-1>", lambda e: messagebox.showinfo(
+            "免责声明 / 用户协议", self._disclaimer_text))
 
         # 状态栏
         self.status_var = tk.StringVar(value="就绪 — 请先扫码登录，再粘贴B站视频链接")
@@ -351,6 +382,19 @@ class BilibiliDownloader:
             self.output_dir = chosen
             self.dir_var.set(chosen)
 
+    def _copy_video_info(self):
+        parts = []
+        if self.video_title:
+            parts.append(self.video_title)
+        if self.video_author:
+            parts.append(f"@{self.video_author}")
+        if parts:
+            self.root.clipboard_clear()
+            self.root.clipboard_append("\n".join(parts))
+            self.status_var.set("视频信息已复制到剪贴板")
+        else:
+            messagebox.showwarning("提示", "暂无视频信息，请先查询")
+
     # ── 查询 ──────────────────────────────────────────────────────
 
     def _query(self):
@@ -402,6 +446,7 @@ class BilibiliDownloader:
             return
 
         self.video_title = info.get("title", "未知")
+        self.video_author = info.get("uploader") or info.get("channel") or ""
         duration = info.get("duration") or 0
         raw_formats = info.get("formats", [])
 
@@ -494,6 +539,10 @@ class BilibiliDownloader:
         self.video_tree.delete(*self.video_tree.get_children())
         self.audio_tree.delete(*self.audio_tree.get_children())
 
+        self.video_title_var.set(self.video_title)
+        author_text = f"@{self.video_author}" if self.video_author else ""
+        self.video_author_var.set(author_text)
+
         for f in video_formats:
             self.video_tree.insert("", tk.END, values=(
                 "☐", f["id"], f["quality"], f["resolution"],
@@ -538,6 +587,9 @@ class BilibiliDownloader:
         return self.audio_formats[idx]
 
     def _download(self):
+        if not self.agree_var.get():
+            messagebox.showwarning("提示", "请先勾选同意「用户协议/免责声明」")
+            return
         v = self._get_checked_video()
         if v is None:
             messagebox.showwarning("提示", "请在视频列表中勾选一个格式")

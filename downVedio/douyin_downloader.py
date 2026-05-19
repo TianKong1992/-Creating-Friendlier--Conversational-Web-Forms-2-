@@ -10,8 +10,6 @@ import re
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import webbrowser
-
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -39,9 +37,11 @@ class DouyinDownloader:
 
         self.formats = []
         self.video_title = ""
+        self.video_author = ""
         self.output_dir = os.path.expanduser("~\\Downloads")
 
         self.checked_iid = None
+        self.agree_var = tk.BooleanVar(value=False)
         self._playwright_cookies = []
         self._cookies_browser = "firefox"
         self._lock = threading.Lock()
@@ -111,26 +111,15 @@ class DouyinDownloader:
         row1 = ttk.Frame(login_frame)
         row1.pack(fill=tk.X, pady=(0, 4))
 
-        ttk.Label(row1, text="浏览器:").pack(side=tk.LEFT)
-        self.browser_var = tk.StringVar(value="Firefox")
-        self.browser_combo = ttk.Combobox(
-            row1, textvariable=self.browser_var,
-            values=["Firefox (推荐)", "Chrome", "Edge", "Brave", "Opera"],
-            state="readonly", width=14)
-        self.browser_combo.pack(side=tk.LEFT, padx=(4, 8))
-
         self.login_btn = ttk.Button(row1, text="获取登录状态",
                                     command=self._browser_login)
-        self.login_btn.pack(side=tk.LEFT, padx=(0, 8))
-
-        self.open_web_btn = ttk.Button(row1, text="打开登录页",
-                                       command=self._open_login_page)
-        self.open_web_btn.pack(side=tk.LEFT)
+        self.login_btn.pack(side=tk.LEFT)
 
         self.login_status_var = tk.StringVar(
             value="未登录 — 推荐使用 Firefox 登录 douyin.com，Chrome/Edge 可能无法解密 Cookie")
-        ttk.Label(login_frame, textvariable=self.login_status_var,
-                  foreground="gray").pack(anchor=tk.W, pady=(4, 0))
+        self.login_status_label = ttk.Label(login_frame, textvariable=self.login_status_var,
+                                            foreground="gray")
+        self.login_status_label.pack(anchor=tk.W, pady=(4, 0))
 
         ttk.Label(login_frame,
                   text="步骤: ① 用 Firefox 打开并登录 douyin.com → ② 点击「获取登录状态」",
@@ -164,6 +153,18 @@ class DouyinDownloader:
         fs.pack(side=tk.RIGHT, fill=tk.Y)
         self.fmt_tree.bind("<ButtonRelease-1>", self._on_format_click)
 
+        # 视频信息显示
+        info_frame = ttk.LabelFrame(self.root, text="视频信息", padding="6")
+        info_frame.pack(fill=tk.X, padx=8, pady=(6, 0))
+        self.video_title_var = tk.StringVar(value="")
+        ttk.Label(info_frame, textvariable=self.video_title_var,
+                  font=("", 11, "bold"), wraplength=700).pack(anchor=tk.W)
+        self.video_author_var = tk.StringVar(value="")
+        ttk.Label(info_frame, textvariable=self.video_author_var,
+                  foreground="#888", wraplength=700).pack(anchor=tk.W, pady=(2, 0))
+        self.copy_info_btn = ttk.Button(info_frame, text="复制信息", command=self._copy_video_info)
+        self.copy_info_btn.pack(anchor=tk.W, pady=(4, 0))
+
         # 保存目录
         dir_frame = ttk.Frame(self.root, padding="8 4 8 4")
         dir_frame.pack(fill=tk.X)
@@ -179,18 +180,28 @@ class DouyinDownloader:
         self.progress = ttk.Progressbar(prog_frame, mode="determinate")
         self.progress.pack(fill=tk.X)
 
-        # 下载按钮
+        # 下载按钮 + 用户协议
         btn_frame = ttk.Frame(self.root, padding="8 4 8 8")
         btn_frame.pack(fill=tk.X)
         self.dl_btn = ttk.Button(btn_frame, text="下载选中格式", command=self._download)
         self.dl_btn.pack(side=tk.LEFT)
 
-        # 免责声明
-        disclaimer_frame = ttk.Frame(self.root, padding="2 4 2 2")
-        disclaimer_frame.pack(fill=tk.X, side=tk.BOTTOM)
-        ttk.Label(disclaimer_frame,
-                  text="免责声明：本工具仅供个人学习使用。下载内容请勿二次分发，版权归原作者及平台所有。",
-                  foreground="gray", font=("", 8)).pack()
+        self.agree_cb = ttk.Checkbutton(btn_frame, variable=self.agree_var)
+        self.agree_cb.pack(side=tk.LEFT, padx=(12, 0))
+        self._disclaimer_text = (
+            "本软件仅为技术工具，提供公开网络视频资源的下载辅助功能，"
+            "不存储、不托管、不分享任何视频内容，不拥有任何下载内容的版权。\n\n"
+            "用户使用本软件仅限个人学习、研究、欣赏等非商业用途，"
+            "且必须获得原作品权利人的合法授权。严禁用于商业盈利、二次分发、公开传播、侵权搬运。\n\n"
+            "任何因未经授权下载、传播、商用导致的版权侵权、法律纠纷、赔偿责任，"
+            "全部由用户自行承担，与本软件开发者无关。\n\n"
+            "使用即同意：下载、安装、使用本软件，即表示您已阅读、理解并同意本声明全部条款。"
+        )
+        self.agree_link = ttk.Label(btn_frame, text="用户协议/免责声明",
+                                    foreground="blue", cursor="hand2")
+        self.agree_link.pack(side=tk.LEFT, padx=(4, 0))
+        self.agree_link.bind("<Button-1>", lambda e: messagebox.showinfo(
+            "免责声明 / 用户协议", self._disclaimer_text))
 
         # 状态栏
         self.status_var = tk.StringVar(value="就绪 — 粘贴抖音视频链接，点击查询")
@@ -215,6 +226,19 @@ class DouyinDownloader:
             self.fmt_tree.set(iid, "fselect", "☑")
             self.checked_iid = iid
 
+    def _copy_video_info(self):
+        parts = []
+        if self.video_title:
+            parts.append(self.video_title)
+        if self.video_author:
+            parts.append(f"@{self.video_author}")
+        if parts:
+            self.root.clipboard_clear()
+            self.root.clipboard_append("\n".join(parts))
+            self.status_var.set("视频信息已复制到剪贴板")
+        else:
+            messagebox.showwarning("提示", "暂无视频信息，请先查询")
+
     def _browse_dir(self):
         chosen = filedialog.askdirectory(initialdir=self.output_dir, title="选择保存目录")
         if chosen:
@@ -223,14 +247,10 @@ class DouyinDownloader:
 
     # ── 登录 ──────────────────────────────────────────────────────
 
-    def _open_login_page(self):
-        webbrowser.open("https://www.douyin.com/")
-
     def _browser_login(self):
-        browser = self.browser_var.get().replace(" (推荐)", "").lower()
         self.login_btn.config(state=tk.DISABLED)
-        self.login_status_var.set(f"正在读取 {browser.title()} 中的抖音 Cookie...")
-        threading.Thread(target=self._do_browser_login, args=(browser,), daemon=True).start()
+        self.login_status_var.set("正在读取 Firefox 中的抖音 Cookie...")
+        threading.Thread(target=self._do_browser_login, args=("firefox",), daemon=True).start()
 
     def _do_browser_login(self, browser):
         from yt_dlp.cookies import extract_cookies_from_browser
@@ -294,14 +314,10 @@ class DouyinDownloader:
             self._cookies_browser = browser
         self.root.after(0, self._on_login_success, browser, len(pw_cookies))
 
-    def _on_login_success(self, browser, count):
+    def _on_login_success(self, _browser, _count):
         self.login_btn.config(state=tk.NORMAL)
-        self.login_status_var.set(f"已获取 ✓ ({browser}, {count} 个 Cookie) — 可查询和下载")
-        messagebox.showinfo(
-            "获取成功",
-            f"已读取 {browser.title()} 中的抖音登录状态（{count} 个 Cookie）！\n\n"
-            f"现在可以查询和下载视频了。"
-        )
+        self.login_status_var.set("已登录")
+        self.login_status_label.config(foreground="green")
 
     def _on_login_error(self, msg):
         self.login_btn.config(state=tk.NORMAL)
@@ -378,6 +394,12 @@ class DouyinDownloader:
 
         detail = aweme_data["aweme_detail"]
         self.video_title = detail.get("desc", "未知")
+        author_info = detail.get("author", {})
+        self.video_author = author_info.get("nickname", "")
+        stats = detail.get("statistics", {})
+        digg = stats.get("digg_count", 0)
+        comment = stats.get("comment_count", 0)
+        share = stats.get("share_count", 0)
         duration_ms = detail.get("duration", 0) or 0
         video = detail.get("video", {})
         bit_rates = video.get("bit_rate", [])
@@ -410,6 +432,10 @@ class DouyinDownloader:
             codec = "H.265" if is_h265 else "H.264"
             fmt_type = br.get("format", "")
 
+            # 过滤掉无音频的 DASH 分离流
+            if fmt_type == "dash":
+                continue
+
             # 用 video_extra 中的 definition 作为画质标签
             extra_str = br.get("video_extra", "")
             definition = ""
@@ -432,8 +458,6 @@ class DouyinDownloader:
                 filesize = 0
 
             note_parts = [self._format_bitrate(bitrate)]
-            if fmt_type == "dash":
-                note_parts.append("(无音频)")
 
             formats.append({
                 "idx": i,
@@ -468,6 +492,11 @@ class DouyinDownloader:
                 "☐", str(f["idx"] + 1), f["quality"], f["resolution"],
                 f["codec"], f["filesize"], f["note"]))
 
+        # 更新视频信息显示
+        self.video_title_var.set(self.video_title)
+        author_text = f"@{self.video_author}" if self.video_author else ""
+        self.video_author_var.set(author_text)
+
         if formats:
             best = formats[0]
             self.status_var.set(
@@ -491,6 +520,9 @@ class DouyinDownloader:
         return self.formats[idx]
 
     def _download(self):
+        if not self.agree_var.get():
+            messagebox.showwarning("提示", "请先勾选同意「用户协议/免责声明」")
+            return
         f = self._get_checked_format()
         if f is None:
             messagebox.showwarning("提示", "请在视频格式列表中勾选一个格式")
