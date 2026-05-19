@@ -115,6 +115,9 @@ class VideoDownloader:
         self.xhs_author = ""
         self.xhs_checked = None
 
+        # 查询取消标志
+        self._query_canceled = {}
+
     # ═══════════════════════════════════════════════════════════════
     # 通用工具方法
     # ═══════════════════════════════════════════════════════════════
@@ -153,6 +156,31 @@ class VideoDownloader:
             if k not in seen or f["_bytes"] > seen[k]["_bytes"]:
                 seen[k] = f
         return list(seen.values())
+
+    def _tree_show_loading(self, tree, btn, cancel_cmd, status_var, msg,
+                           disable_widgets=None):
+        """列表居中显示加载行，查询按钮→取消，禁用其他控件"""
+        tree.delete(*tree.get_children())
+        n_cols = len(tree["columns"])
+        vals = [""] * n_cols
+        vals[n_cols // 2] = "查询中..."
+        tree.insert("", tk.END, values=tuple(vals))
+        btn.config(text="取消", command=cancel_cmd)
+        status_var.set(msg)
+        if disable_widgets:
+            for w in disable_widgets:
+                w.config(state=tk.DISABLED)
+
+    def _restore_query_ui(self, tree, btn, query_cmd, status_var,
+                          enable_widgets=None, msg=None):
+        """恢复查询按钮，清空列表，启用控件"""
+        btn.config(text="查询", command=query_cmd)
+        tree.delete(*tree.get_children())
+        if msg:
+            status_var.set(msg)
+        if enable_widgets:
+            for w in enable_widgets:
+                w.config(state=tk.NORMAL)
 
     def _show_disclaimer(self):
         messagebox.showinfo("免责声明 / 用户协议", DISCLAIMER_TEXT)
@@ -308,7 +336,8 @@ class VideoDownloader:
         ttk.Label(lf, text="登录:").pack(side=tk.LEFT)
         ttk.Button(lf, text="扫码登录", command=self._bili_qr_login).pack(side=tk.LEFT, padx=(6, 8))
         self.bili_cookie_var = tk.StringVar(value="未登录")
-        ttk.Label(lf, textvariable=self.bili_cookie_var, foreground="gray").pack(side=tk.LEFT)
+        self.bili_cookie_label = ttk.Label(lf, textvariable=self.bili_cookie_var, foreground="gray")
+        self.bili_cookie_label.pack(side=tk.LEFT)
 
         # 视频格式列表
         vf = ttk.LabelFrame(p, text="视频格式 (勾选一个)", padding="4")
@@ -443,9 +472,9 @@ class VideoDownloader:
     def _bili_qr_success(self):
         self._bili_qr_running = False
         self.bili_cookie_var.set("已登录 ✓ (扫码)")
+        self.bili_cookie_label.config(foreground="green")
         self._bili_qr_win.destroy()
         messagebox.showinfo("登录成功", "已通过扫码登录，现在可以下载高清视频了！")
-
     def _bili_qr_error(self, msg):
         self._bili_qr_running = False
         self._bili_qr_status_var.set(msg)
@@ -458,9 +487,19 @@ class VideoDownloader:
         if not url:
             messagebox.showwarning("提示", "请先输入视频链接")
             return
-        self.bili_query_btn.config(state=tk.DISABLED)
-        self.bili_status_var.set("正在获取视频信息...")
+        self._query_canceled["bili"] = False
+        self._tree_show_loading(self.bili_video_tree, self.bili_query_btn,
+                                self._bili_cancel_query, self.bili_status_var,
+                                "正在获取视频信息...",
+                                disable_widgets=[self.bili_url_entry, self.bili_dl_btn])
         threading.Thread(target=self._bili_do_query, args=(url,), daemon=True).start()
+
+    def _bili_cancel_query(self):
+        self._query_canceled["bili"] = True
+        self._restore_query_ui(self.bili_video_tree, self.bili_query_btn,
+                               self._bili_query, self.bili_status_var,
+                               enable_widgets=[self.bili_url_entry, self.bili_dl_btn],
+                               msg="已取消查询")
 
     def _bili_do_query(self, url):
         opts = {"quiet": True, "no_warnings": True}
@@ -473,6 +512,8 @@ class VideoDownloader:
             self.root.after(0, self._bili_query_error, f"获取信息失败: {e}")
             return
 
+        if self._query_canceled.get("bili"):
+            return
         self.bili_title = info.get("title", "未知")
         self.bili_author = info.get("uploader") or info.get("channel") or ""
         duration = info.get("duration") or 0
@@ -517,12 +558,16 @@ class VideoDownloader:
         self.root.after(0, self._bili_query_ok, vf, af)
 
     def _bili_query_error(self, msg):
-        self.bili_query_btn.config(state=tk.NORMAL)
-        self.bili_status_var.set("查询失败")
+        self._restore_query_ui(self.bili_video_tree, self.bili_query_btn,
+                               self._bili_query, self.bili_status_var,
+                               enable_widgets=[self.bili_url_entry, self.bili_dl_btn],
+                               msg="查询失败")
         messagebox.showerror("错误", msg)
 
     def _bili_query_ok(self, vf, af):
-        self.bili_query_btn.config(state=tk.NORMAL)
+        self._restore_query_ui(self.bili_video_tree, self.bili_query_btn,
+                               self._bili_query, self.bili_status_var,
+                               enable_widgets=[self.bili_url_entry, self.bili_dl_btn])
         self.bili_formats, self.bili_audio_formats = vf, af
         self._bili_v_ref[0] = None
         self.bili_video_tree.delete(*self.bili_video_tree.get_children())
@@ -660,9 +705,19 @@ class VideoDownloader:
         if not url:
             messagebox.showwarning("提示", "请先输入视频链接")
             return
-        self.dy_query_btn.config(state=tk.DISABLED)
-        self.dy_status_var.set("正在获取视频信息...")
+        self._query_canceled["dy"] = False
+        self._tree_show_loading(self.dy_tree, self.dy_query_btn,
+                                self._dy_cancel_query, self.dy_status_var,
+                                "正在获取视频信息...",
+                                disable_widgets=[self.dy_url_entry, self.dy_dl_btn])
         threading.Thread(target=self._dy_do_query, args=(url,), daemon=True).start()
+
+    def _dy_cancel_query(self):
+        self._query_canceled["dy"] = True
+        self._restore_query_ui(self.dy_tree, self.dy_query_btn,
+                               self._dy_query, self.dy_status_var,
+                               enable_widgets=[self.dy_url_entry, self.dy_dl_btn],
+                               msg="已取消查询")
 
     def _dy_do_query(self, url):
         from playwright.sync_api import sync_playwright
@@ -714,6 +769,8 @@ class VideoDownloader:
             self.root.after(0, self._dy_query_err, f"Playwright 错误: {e}")
             return
 
+        if self._query_canceled.get("dy"):
+            return
         detail = aweme["aweme_detail"]
         self.dy_title = detail.get("desc", "未知")
         self.dy_author = (detail.get("author", {}) or {}).get("nickname", "")
@@ -755,12 +812,16 @@ class VideoDownloader:
         self.root.after(0, self._dy_query_ok, formats)
 
     def _dy_query_err(self, msg):
-        self.dy_query_btn.config(state=tk.NORMAL)
-        self.dy_status_var.set("查询失败")
+        self._restore_query_ui(self.dy_tree, self.dy_query_btn,
+                               self._dy_query, self.dy_status_var,
+                               enable_widgets=[self.dy_url_entry, self.dy_dl_btn],
+                               msg="查询失败")
         messagebox.showerror("错误", msg)
 
     def _dy_query_ok(self, formats):
-        self.dy_query_btn.config(state=tk.NORMAL)
+        self._restore_query_ui(self.dy_tree, self.dy_query_btn,
+                               self._dy_query, self.dy_status_var,
+                               enable_widgets=[self.dy_url_entry, self.dy_dl_btn])
         self.dy_formats = formats
         self._dy_ref[0] = None
         self.dy_tree.delete(*self.dy_tree.get_children())
@@ -936,9 +997,19 @@ class VideoDownloader:
         if not url:
             messagebox.showwarning("提示", "请先输入视频链接")
             return
-        self.huya_query_btn.config(state=tk.DISABLED)
-        self.huya_status_var.set("正在获取视频信息...")
+        self._query_canceled["huya"] = False
+        self._tree_show_loading(self.huya_tree, self.huya_query_btn,
+                                self._huya_cancel_query, self.huya_status_var,
+                                "正在获取视频信息...",
+                                disable_widgets=[self.huya_url_entry, self.huya_dl_btn])
         threading.Thread(target=self._huya_do_query, args=(url,), daemon=True).start()
+
+    def _huya_cancel_query(self):
+        self._query_canceled["huya"] = True
+        self._restore_query_ui(self.huya_tree, self.huya_query_btn,
+                               self._huya_query, self.huya_status_var,
+                               enable_widgets=[self.huya_url_entry, self.huya_dl_btn],
+                               msg="已取消查询")
 
     def _huya_do_query(self, url):
         try:
@@ -948,6 +1019,8 @@ class VideoDownloader:
             self.root.after(0, self._huya_query_err, f"获取信息失败: {e}")
             return
 
+        if self._query_canceled.get("huya"):
+            return
         self.huya_title = info.get("title", "未知")
         self.huya_author = info.get("uploader") or info.get("channel") or ""
         dur = info.get("duration") or 0
@@ -971,12 +1044,16 @@ class VideoDownloader:
         self.root.after(0, self._huya_query_ok, formats)
 
     def _huya_query_err(self, msg):
-        self.huya_query_btn.config(state=tk.NORMAL)
-        self.huya_status_var.set("查询失败")
+        self._restore_query_ui(self.huya_tree, self.huya_query_btn,
+                               self._huya_query, self.huya_status_var,
+                               enable_widgets=[self.huya_url_entry, self.huya_dl_btn],
+                               msg="查询失败")
         messagebox.showerror("错误", msg)
 
     def _huya_query_ok(self, formats):
-        self.huya_query_btn.config(state=tk.NORMAL)
+        self._restore_query_ui(self.huya_tree, self.huya_query_btn,
+                               self._huya_query, self.huya_status_var,
+                               enable_widgets=[self.huya_url_entry, self.huya_dl_btn])
         self.huya_formats = formats
         self._huya_ref[0] = None
         self.huya_tree.delete(*self.huya_tree.get_children())
@@ -1053,7 +1130,8 @@ class VideoDownloader:
         self.yt_login_btn = ttk.Button(r1, text="获取登录状态", command=self._yt_login)
         self.yt_login_btn.pack(side=tk.LEFT)
         self.yt_login_var = tk.StringVar(value="未登录 — 推荐 Firefox 登录 YouTube")
-        ttk.Label(lf, textvariable=self.yt_login_var, foreground="gray").pack(anchor=tk.W, pady=(4, 0))
+        self.yt_login_label = ttk.Label(lf, textvariable=self.yt_login_var, foreground="gray")
+        self.yt_login_label.pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(lf, text="步骤: ① 用 Firefox 登录 youtube.com → ② 点击「获取登录状态」",
                   foreground="#0066cc").pack(anchor=tk.W, pady=(2, 0))
 
@@ -1085,9 +1163,16 @@ class VideoDownloader:
     # ── YouTube 登录 ──────────────────────────────────────────────
 
     def _yt_login(self):
-        self.yt_login_btn.config(state=tk.DISABLED)
+        self._query_canceled["yt_login"] = False
+        self.yt_login_btn.config(text="取消", command=self._yt_cancel_login)
         self.yt_login_var.set("正在检测 Firefox 中的 YouTube 登录状态...")
+        self.yt_login_label.config(foreground="gray")
         threading.Thread(target=self._yt_do_login, args=("firefox",), daemon=True).start()
+
+    def _yt_cancel_login(self):
+        self._query_canceled["yt_login"] = True
+        self.yt_login_btn.config(text="获取登录状态", command=self._yt_login)
+        self.yt_login_var.set("未登录 — 推荐 Firefox 登录 YouTube")
 
     def _yt_do_login(self, browser):
         opts = {"cookiesfrombrowser": (browser,), "quiet": True, "no_warnings": True,
@@ -1095,10 +1180,14 @@ class VideoDownloader:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.extract_info("https://www.youtube.com/watch?v=jNQXAC9IVRw", download=False)
+            if self._query_canceled.get("yt_login"):
+                return
             self.yt_cookies_browser = browser
             self.yt_use_cookies = True
             self.root.after(0, self._yt_login_ok)
         except Exception as e:
+            if self._query_canceled.get("yt_login"):
+                return
             err = str(e).lower()
             if any(kw in err for kw in ("permission", "sharing violation", "being used", "lock", "另一个程序正在使用", "进程无法访问")):
                 msg = f"读取 {browser.title()} Cookie 失败，请关闭浏览器后重试"
@@ -1115,12 +1204,13 @@ class VideoDownloader:
             self.root.after(0, self._yt_login_err, msg)
 
     def _yt_login_ok(self):
-        self.yt_login_btn.config(state=tk.NORMAL)
+        self.yt_login_btn.config(text="获取登录状态", command=self._yt_login, state=tk.NORMAL)
         self.yt_login_var.set("已登录")
+        self.yt_login_label.config(foreground="green")
         self.yt_login_btn.config(foreground="green")
 
     def _yt_login_err(self, msg):
-        self.yt_login_btn.config(state=tk.NORMAL)
+        self.yt_login_btn.config(text="获取登录状态", command=self._yt_login, state=tk.NORMAL)
         self.yt_use_cookies = False
         self.yt_login_var.set("未登录")
         messagebox.showerror("登录失败", msg)
@@ -1135,9 +1225,19 @@ class VideoDownloader:
         if not url:
             messagebox.showwarning("提示", "请先输入视频链接")
             return
-        self.yt_query_btn.config(state=tk.DISABLED)
-        self.yt_status_var.set("正在获取视频信息...")
+        self._query_canceled["yt"] = False
+        self._tree_show_loading(self.yt_video_tree, self.yt_query_btn,
+                                self._yt_cancel_query, self.yt_status_var,
+                                "正在获取视频信息...",
+                                disable_widgets=[self.yt_url_entry, self.yt_dl_btn, self.yt_login_btn])
         threading.Thread(target=self._yt_do_query, args=(url,), daemon=True).start()
+
+    def _yt_cancel_query(self):
+        self._query_canceled["yt"] = True
+        self._restore_query_ui(self.yt_video_tree, self.yt_query_btn,
+                               self._yt_query, self.yt_status_var,
+                               enable_widgets=[self.yt_url_entry, self.yt_dl_btn, self.yt_login_btn],
+                               msg="已取消查询")
 
     def _yt_do_query(self, url):
         opts = {"quiet": True, "no_warnings": True, "js_runtimes": {"node": {}}}
@@ -1150,6 +1250,8 @@ class VideoDownloader:
             self.root.after(0, self._yt_query_err, f"获取信息失败: {e}")
             return
 
+        if self._query_canceled.get("yt"):
+            return
         self.yt_title = info.get("title", "未知")
         self.yt_author = info.get("uploader") or info.get("channel") or ""
         dur = info.get("duration") or 0
@@ -1194,12 +1296,16 @@ class VideoDownloader:
         self.root.after(0, self._yt_query_ok, vf, af)
 
     def _yt_query_err(self, msg):
-        self.yt_query_btn.config(state=tk.NORMAL)
-        self.yt_status_var.set("查询失败")
+        self._restore_query_ui(self.yt_video_tree, self.yt_query_btn,
+                               self._yt_query, self.yt_status_var,
+                               enable_widgets=[self.yt_url_entry, self.yt_dl_btn, self.yt_login_btn],
+                               msg="查询失败")
         messagebox.showerror("错误", msg)
 
     def _yt_query_ok(self, vf, af):
-        self.yt_query_btn.config(state=tk.NORMAL)
+        self._restore_query_ui(self.yt_video_tree, self.yt_query_btn,
+                               self._yt_query, self.yt_status_var,
+                               enable_widgets=[self.yt_url_entry, self.yt_dl_btn, self.yt_login_btn])
         self.yt_formats, self.yt_audio_formats = vf, af
         self._yt_v_ref[0] = None
         self.yt_video_tree.delete(*self.yt_video_tree.get_children())
@@ -1329,9 +1435,19 @@ class VideoDownloader:
         if not url:
             messagebox.showwarning("提示", "请先输入视频链接")
             return
-        self.xhs_query_btn.config(state=tk.DISABLED)
-        self.xhs_status_var.set("正在获取视频信息...")
+        self._query_canceled["xhs"] = False
+        self._tree_show_loading(self.xhs_tree, self.xhs_query_btn,
+                                self._xhs_cancel_query, self.xhs_status_var,
+                                "正在获取视频信息...",
+                                disable_widgets=[self.xhs_url_entry, self.xhs_dl_btn])
         threading.Thread(target=self._xhs_do_query, args=(url,), daemon=True).start()
+
+    def _xhs_cancel_query(self):
+        self._query_canceled["xhs"] = True
+        self._restore_query_ui(self.xhs_tree, self.xhs_query_btn,
+                               self._xhs_query, self.xhs_status_var,
+                               enable_widgets=[self.xhs_url_entry, self.xhs_dl_btn],
+                               msg="已取消查询")
 
     def _xhs_do_query(self, url):
         opts = {"quiet": True, "no_warnings": True}
@@ -1342,6 +1458,8 @@ class VideoDownloader:
             self.root.after(0, self._xhs_query_err, f"获取信息失败: {e}")
             return
 
+        if self._query_canceled.get("xhs"):
+            return
         self.xhs_title = info.get("title") or info.get("fulltitle") or "未知"
         self.xhs_author = info.get("uploader") or info.get("channel") or ""
         dur = info.get("duration") or 0
@@ -1369,12 +1487,16 @@ class VideoDownloader:
         self.root.after(0, self._xhs_query_ok, formats)
 
     def _xhs_query_err(self, msg):
-        self.xhs_query_btn.config(state=tk.NORMAL)
-        self.xhs_status_var.set("查询失败")
+        self._restore_query_ui(self.xhs_tree, self.xhs_query_btn,
+                               self._xhs_query, self.xhs_status_var,
+                               enable_widgets=[self.xhs_url_entry, self.xhs_dl_btn],
+                               msg="查询失败")
         messagebox.showerror("错误", msg)
 
     def _xhs_query_ok(self, formats):
-        self.xhs_query_btn.config(state=tk.NORMAL)
+        self._restore_query_ui(self.xhs_tree, self.xhs_query_btn,
+                               self._xhs_query, self.xhs_status_var,
+                               enable_widgets=[self.xhs_url_entry, self.xhs_dl_btn])
         self.xhs_formats = formats
         self._xhs_ref[0] = None
         self.xhs_tree.delete(*self.xhs_tree.get_children())
